@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Notebooker — Réglages</title>
+  <link rel="stylesheet" href="options.css" />
+</head>
+<body>
+<main>
+  <h1>📚 Notebooker</h1>
+  <p class="sub">Organisation NotebookLM · sources auto-synchronisées · podcast de brief quotidien</p>
+
+  <section class="card">
+    <h2>☀️ Brief quotidien</h2>
+    <label class="inline"><input type="checkbox" id="b_enabled" /> Activer le brief automatique</label>
+    <div class="grid">
+      <div><label>Heure</label><input type="time" id="b_time" /></div>
+      <div><label>Fenêtre (heures)</label><input type="number" id="b_lookback" min="1" max="168" /></div>
+      <div><label>Rétention des notebooks de brief (jours, 0 = garder)</label><input type="number" id="b_retention" min="0" max="90" /></div>
+    </div>
+    <label class="inline"><input type="checkbox" id="b_weekdays" /> Jours ouvrés uniquement</label>
+    <label>Titre du notebook (<code>{date}</code> remplacé)</label><input type="text" id="b_title" />
+    <label>Consignes Audio Overview</label><textarea id="b_audio"></textarea>
+    <div class="grid">
+      <div><label>Requête Gmail</label><input type="text" id="b_query" /><div class="hint">Syntaxe Gmail. <code>newer_than</code> est ajouté automatiquement.</div></div>
+      <div><label>Nb max d'emails</label><input type="number" id="b_max" min="1" max="200" /></div>
+    </div>
+    <label>Exclusions Gmail (une par ligne : expéditeur, domaine ou <code>label:xxx</code>)</label>
+    <textarea id="b_exclusions" placeholder="notifications@dotfile.com&#10;label:kyc&#10;label:confidentiel"></textarea>
+    <div class="alert">Le brief requiert que Chrome soit ouvert à l'heure prévue. Sinon, il est rattrapé au démarrage de Chrome (jusqu'à midi).</div>
+  </section>
+
+  <section class="card">
+    <h2>🗂️ Notion</h2>
+    <div class="grid">
+      <div>
+        <label>Libellé workspace perso</label><input type="text" id="n_p_label" />
+        <label>Token intégration (perso)</label><input type="password" id="n_p_token" autocomplete="off" />
+        <label>Bases / pages scannées (une par ligne, vide = toutes les pages partagées)</label><textarea id="n_p_roots"></textarea>
+        <button data-test="notion-personal">Tester</button>
+      </div>
+      <div>
+        <label>Libellé workspace entreprise</label><input type="text" id="n_c_label" />
+        <label>Token intégration (entreprise)</label><input type="password" id="n_c_token" autocomplete="off" />
+        <label>Bases / pages scannées</label><textarea id="n_c_roots"></textarea>
+        <button data-test="notion-company">Tester</button>
+      </div>
+    </div>
+    <div class="hint">Créer une intégration interne sur notion.so/profile/integrations, puis la partager uniquement avec les pages/bases voulues (principe du moindre privilège). Les bases listées ici apparaissent aussi comme cibles d'ajout.</div>
+  </section>
+
+  <section class="card">
+    <h2>🤖 Synthèse Claude (optionnelle)</h2>
+    <label class="inline"><input type="checkbox" id="c_enabled" /> Pré-synthétiser le brief avec Claude avant NotebookLM</label>
+    <div class="grid">
+      <div><label>Authentification</label>
+        <select id="c_mode"><option value="oauth_token">Jeton OAuth (Bearer)</option><option value="api_key">Clé API</option></select></div>
+      <div><label>Modèle</label><input type="text" id="c_model" /></div>
+    </div>
+    <label>Jeton OAuth</label><input type="password" id="c_oauth" autocomplete="off" />
+    <div class="hint">Obtenu via <code>ant auth login</code> puis <code>ant auth print-credentials --access-token</code>. Jeton court : à renouveler quand il expire.</div>
+    <label>Clé API</label><input type="password" id="c_key" autocomplete="off" />
+    <label class="inline"><input type="checkbox" id="c_redact" /> Masquer les données personnelles (emails, IBAN, téléphones, NIR, cartes) avant tout envoi</label>
+    <label class="inline"><input type="checkbox" id="c_amounts" /> Masquer aussi les montants</label>
+    <button data-test="claude">Tester</button>
+  </section>
+
+  <section class="card">
+    <h2>📓 NotebookLM</h2>
+    <div class="grid">
+      <div><label>Index de compte Google (<code>/u/N/</code>)</label><input type="number" id="l_account" min="0" max="9" /></div>
+    </div>
+    <label class="inline"><input type="checkbox" id="l_bg" /> Automatisation dans des onglets en arrière-plan</label>
+    <div class="actions"><button data-test="gmail">Tester Gmail</button></div>
+  </section>
+
+  <div class="actions">
+    <button class="primary" id="save">Enregistrer</button>
+    <button id="runNow">Lancer le brief maintenant</button>
+    <span id="msg" class="hint"></span>
+  </div>
+
+  <section class="card" style="margin-top:18px">
+    <h2>🔁 Abonnements de sources</h2>
+    <div class="tbl-wrap"><table>
+      <thead><tr><th>Source</th><th>Type</th><th>Cible</th><th>Fréquence</th><th>Dernier check</th><th></th></tr></thead>
+      <tbody id="subs"></tbody>
+    </table></div>
+    <details style="margin-top:12px"><summary>Ajouter un abonnement (RSS, chaîne YouTube, page/base Notion)</summary>
+      <div class="grid">
+        <div><label>URL ou ID</label><input type="text" id="s_ref" placeholder="https://www.youtube.com/channel/UC… · https://blog/feed · URL Notion" /></div>
+        <div><label>Type</label><select id="s_kind"><option value="auto">Auto</option><option value="feed">Flux RSS/Atom</option><option value="notion_page">Page Notion</option><option value="notion_database">Base Notion</option><option value="url">URL</option></select></div>
+        <div><label>Workspace Notion</label><select id="s_ws"><option value="company">Entreprise</option><option value="personal">Perso</option></select></div>
+        <div><label>Cible</label><select id="s_target"></select></div>
+        <div><label>Fréquence (min)</label><input type="number" id="s_freq" value="360" min="15" /></div>
+      </div>
+      <div class="actions"><button id="s_add" class="primary">Ajouter</button></div>
+    </details>
+  </section>
+
+  <section class="card">
+    <h2>📜 Historique des briefs</h2>
+    <div id="runs"></div>
+  </section>
+</main>
+<script src="options.js"></script>
+</body>
+</html>

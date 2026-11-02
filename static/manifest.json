@@ -1,0 +1,64 @@
+{
+  "manifest_version": 3,
+  "name": "Notebooker — NotebookLM Organizer & Daily Brief",
+  "short_name": "Notebooker",
+  "version": "0.1.0",
+  "description": "Dossiers/tags pour NotebookLM, sources auto-synchronisées (web, YouTube, RSS, Notion) et podcast de brief quotidien.",
+  "minimum_chrome_version": "120",
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Notebooker",
+    "default_icon": {
+      "16": "icon16.png",
+      "32": "icon32.png"
+    }
+  },
+  "options_page": "options.html",
+  "permissions": [
+    "storage",
+    "alarms",
+    "contextMenus",
+    "notifications",
+    "identity",
+    "tabs",
+    "scripting",
+    "activeTab"
+  ],
+  "host_permissions": [
+    "https://notebooklm.google.com/*",
+    "https://gmail.googleapis.com/*",
+    "https://api.notion.com/*",
+    "https://api.anthropic.com/*"
+  ],
+  "optional_host_permissions": [
+    "https://*/*",
+    "http://*/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://notebooklm.google.com/*"
+      ],
+      "js": [
+        "content-notebooklm.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "oauth2": {
+    "client_id": "REPLACE_WITH_YOUR_CHROME_EXTENSION_OAUTH_CLIENT_ID.apps.googleusercontent.com",
+    "scopes": [
+      "https://www.googleapis.com/auth/gmail.readonly"
+    ]
+  },
+  "icons": {
+    "16": "icon16.png",
+    "32": "icon32.png",
+    "48": "icon48.png",
+    "128": "icon128.png"
+  }
+}

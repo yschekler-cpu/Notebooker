@@ -1,0 +1,36 @@
+:root {
+  --bg: #fafafa; --panel: #ffffff; --text: #18181b; --muted: #71717a; --border: #e4e4e7;
+  --accent: #4f46e5; --accent-text: #ffffff; --warn: #b45309; --err: #b91c1c; --ok: #15803d;
+  color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #18181b; --panel: #232327; --text: #f4f4f5; --muted: #a1a1aa; --border: #3f3f46; --accent: #818cf8; --accent-text: #111; --warn: #fbbf24; --err: #f87171; --ok: #4ade80; }
+}
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; margin: 0; }
+main { max-width: 880px; margin: 0 auto; padding: 24px 16px 64px; }
+h1 { font-size: 22px; margin: 0 0 4px; }
+h2 { font-size: 16px; margin: 0 0 12px; }
+.sub { color: var(--muted); margin: 0 0 24px; }
+section.card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 18px; margin-bottom: 18px; }
+label { display: block; font-size: 13px; font-weight: 500; margin: 10px 0 4px; }
+label.inline { display: flex; align-items: center; gap: 8px; font-weight: 400; }
+input[type=text], input[type=password], input[type=time], input[type=number], select, textarea {
+  width: 100%; padding: 7px 9px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text); font: inherit;
+}
+textarea { min-height: 70px; resize: vertical; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 0 16px; }
+button { padding: 7px 12px; border-radius: 8px; border: 1px solid var(--border); background: var(--panel); color: var(--text); cursor: pointer; font: inherit; }
+button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+button:hover { filter: brightness(.97); }
+.hint { font-size: 12px; color: var(--muted); margin-top: 4px; }
+.alert { border-left: 3px solid var(--warn); padding: 8px 12px; background: color-mix(in srgb, var(--warn) 8%, transparent); border-radius: 6px; font-size: 13px; margin: 10px 0; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th, td { text-align: left; padding: 7px 6px; border-bottom: 1px solid var(--border); vertical-align: top; }
+th { font-size: 12px; color: var(--muted); font-weight: 500; }
+.tbl-wrap { overflow-x: auto; }
+.ok { color: var(--ok); } .warn { color: var(--warn); } .error { color: var(--err); }
+.actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
+details summary { cursor: pointer; }
+code { font-size: 12px; }
+a { color: var(--accent); }
