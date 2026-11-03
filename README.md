@@ -67,6 +67,10 @@ Les tests E2E nécessitent Playwright (`npx playwright install chromium` en loca
 
 Chrome → `chrome://extensions` → **Mode développeur** → **Charger l'extension non empaquetée** → dossier `dist/`.
 
+### ID de l'extension
+
+Le manifest contient une clé publique (`key`) qui **fige l'ID de l'extension** : `pkhpbkhohjogegmldhbkmciebihllfpi`, identique sur tous les postes en chargement non empaqueté. C'est cet ID qu'il faut déclarer dans le client OAuth Google. (Une publication Chrome Web Store attribuera son propre ID : remplacer alors `key` par celle de l'élément publié.)
+
 ### Configuration
 
 | Étape | Où | Détail |
