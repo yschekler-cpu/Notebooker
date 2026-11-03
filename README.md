@@ -51,9 +51,12 @@ Extension Chrome (Manifest V3) pour NotebookLM :
 ```bash
 npm install
 npm run build        # → dist/
-npm test             # tests unitaires (vitest)
 npm run typecheck
+npm test             # tests unitaires (vitest)
+npm run e2e          # tests E2E : extension réelle dans Chromium + faux NotebookLM (après build)
 ```
+
+Les tests E2E nécessitent Playwright (`npx playwright install chromium` en local). Ils chargent l'extension dans Chromium, servent un **faux NotebookLM** (`tests/e2e/mock-notebooklm.html` : icônes Material dans les boutons, cartes sans lien, overlays CDK, boutons désactivés, libellés leurres) et interceptent les API Notion et Anthropic pour vérifier les requêtes réellement émises.
 
 Chrome → `chrome://extensions` → **Mode développeur** → **Charger l'extension non empaquetée** → dossier `dist/`.
 
@@ -64,7 +67,7 @@ Chrome → `chrome://extensions` → **Mode développeur** → **Charger l'exten
 | 1. NotebookLM | Navigateur | Être connecté à notebooklm.google.com avec le compte voulu. Si plusieurs comptes Google : régler l'**index de compte** (`/u/N/`) dans les options. Ouvrir NotebookLM une fois → les notebooks sont listés comme cibles. |
 | 2. Gmail | Google Cloud Console | Créer un **OAuth client ID** de type *Chrome Extension* avec l'ID de l'extension (visible dans `chrome://extensions`), activer la **Gmail API**, puis remplacer `oauth2.client_id` dans `static/manifest.json`. Scope demandé : `gmail.readonly` uniquement. Pour figer l'ID de l'extension entre postes, ajouter une clé `key` au manifest. |
 | 3. Notion | notion.so/profile/integrations | Créer **une intégration interne par workspace** (perso, entreprise). Partager **uniquement** les pages/bases nécessaires avec chaque intégration. Coller les tokens dans les options. |
-| 4. Claude (optionnel) | Options | Mode **Jeton OAuth** : `ant auth login` puis `ant auth print-credentials --access-token`. Mode **Clé API** : clé Console. Modèle par défaut `claude-opus-5-5`. |
+| 4. Claude (optionnel) | Options | Mode **Jeton OAuth** : `ant auth login` puis `ant auth print-credentials --access-token`. Mode **Clé API** : clé Console. Modèle par défaut `claude-opus-5-5`, fallbacks serveur activés (désactivés automatiquement si l'API les refuse). Corpus plafonné à ~100k tokens. |
 | 5. Brief | Options | Activer, régler l'heure, la fenêtre, la requête Gmail, les **exclusions** et les consignes de l'Audio Overview. **Enregistrer** → la prochaine exécution s'affiche. |
 
 ---
@@ -73,7 +76,8 @@ Chrome → `chrome://extensions` → **Mode développeur** → **Charger l'exten
 
 | Action | Comment |
 |---|---|
-| Classer un notebook | Page d'accueil NotebookLM → boutons ☆ / 📁 / # sur chaque carte ; panneau gauche pour filtrer (repliable). |
+| Classer un notebook | Page d'accueil NotebookLM → bouton **⋯** sur chaque carte (dossier, tags, épingle) ou **glisser-déposer** la carte sur un dossier du panneau. Panneau repliable en bas à gauche : filtres, recherche titre/tag, renommage/couleur des dossiers. Les épinglés remontent en tête. |
+| Sauvegarder l'organisation | Options → *Organisation* → Exporter / Importer (JSON, sans token ni contenu). |
 | Ajouter la page courante | Popup → cible + fréquence → **Ajouter cette page**. Ou clic droit → *Notebooker : ajouter à…* |
 | Suivre un flux / une chaîne YouTube | Options → *Ajouter un abonnement* (URL de chaîne `youtube.com/channel/UC…`, playlist, `…/feed`, page ou base Notion). |
 | Brief manuel | Popup → **☀️ Brief maintenant** (premier lancement : autorisation Gmail interactive). |
@@ -85,9 +89,11 @@ Chrome → `chrome://extensions` → **Mode développeur** → **Charger l'exten
 |---|---|---|
 | `url` (article) | SHA-256 du texte extrait | Ré-ajout de l'URL si changement |
 | `url` (YouTube) / ajout unique | — | Un seul ajout |
-| `feed` (RSS/Atom, YouTube) | GUID d'item déjà vu | Ajout des nouveaux items (max 10/passage) |
+| `feed` (RSS/Atom, YouTube) | GUID d'item déjà vu | Ajout des nouveaux items (max 10/passage ; le surplus part au passage suivant ; au 1er abonnement, seuls les 10 derniers sont importés) |
 | `notion_page` | `last_edited_time` | Nouvelle source texte datée |
 | `notion_database` | `last_edited_time` ≥ dernier check | Une source texte par page modifiée |
+
+**Fiabilité** : en cas d'échec partiel (ex. 2 sources sur 3 ajoutées), seules les sources réellement ajoutées sont marquées comme traitées → aucune perte, aucun doublon au passage suivant. Ré-ajouter une URL déjà suivie vers la même cible met à jour l'abonnement au lieu d'en créer un second. Synchro et brief sont protégés contre les exécutions concurrentes (verrou persistant).
 
 ---
 
@@ -95,14 +101,16 @@ Chrome → `chrome://extensions` → **Mode développeur** → **Charger l'exten
 
 | Sujet | Mesure |
 |---|---|
-| **Moindre privilège** | Gmail `readonly` ; intégrations Notion limitées aux pages partagées ; permissions d'hôte optionnelles demandées site par site. |
+| **Moindre privilège** | Pas de permission `tabs` ni `scripting` (aucun accès à l'historique de navigation) ; Gmail `readonly` ; intégrations Notion limitées aux pages partagées ; permissions d'hôte optionnelles demandées site par site, au moment de l'abonnement. |
 | **Secrets** | Tokens Notion / Claude en `chrome.storage.local` (jamais synchronisés). Organisation (dossiers/tags) seule en `storage.sync`. |
 | **Minimisation (RGPD)** | Masquage avant envoi : emails, IBAN (FR/BE/LU/IT…), cartes, téléphones FR/BE/LU/IT, NIR ; montants en option. Historique Gmail cité supprimé. |
 | **LCB-FT / KYC** | Exclusions Gmail par expéditeur/domaine/label (ex. `notifications@dotfile.com`, `label:kyc`) pour ne jamais faire transiter de dossiers KYC/KYD dans un notebook ou un LLM. |
 | **Périmètre NotebookLM** | ⚠️ Utiliser le **compte Google Workspace Opale**, pas un compte perso : le contenu des emails pro ne doit pas quitter le tenant de l'entreprise. À valider avec le RSSI / DPO. |
 | **LLM tiers** | Claude OFF par défaut ; en ON, à inscrire au registre des traitements (sous-traitant, finalité, durée). |
 | **Rétention** | Suppression automatique des notebooks de brief après N jours (uniquement ceux créés par l'extension). |
-| **Suppression de données** | L'extension ne supprime **jamais** un notebook qu'elle n'a pas créé. |
+| **Isolation des secrets** | `storage.local` (tokens) en accès `TRUSTED_CONTEXTS` : illisible depuis le content script injecté dans NotebookLM. Le routeur de messages n'accepte d'une page web que la liste des notebooks visibles (payload validé). |
+| **Création de notebook** | Le driver refuse tout ID de notebook déjà existant après le clic « Créer » (protection contre l'ouverture accidentelle d'un notebook existant, qui serait sinon rempli puis supprimé par la rétention). |
+| **Suppression de données** | L'extension ne supprime **jamais** un notebook qu'elle n'a pas créé ; avant suppression, la carte ciblée doit référencer un seul notebook et la boîte de confirmation doit correspondre, sinon abandon. |
 
 ---
 
@@ -121,8 +129,8 @@ Chrome → `chrome://extensions` → **Mode développeur** → **Charger l'exten
 - [ ] Driver **NotebookLM Enterprise** (API Discovery Engine) en alternative au driver UI
 - [ ] Suppression de l'ancienne version d'une source lors d'un rafraîchissement
 - [ ] Sources Google Calendar (réunions du jour) et Slack dans le brief
-- [ ] Drag & drop des cartes vers les dossiers
-- [ ] Export / import de l'organisation (JSON)
+- [x] Drag & drop des cartes vers les dossiers
+- [x] Export / import de l'organisation (JSON)
 
 ## Structure
 
@@ -132,5 +140,5 @@ src/shared/             types, storage, redact (PII), schedule, messages
 src/background/         service worker : index, sync, briefing, gmail, notion, claude, notebooklm, rss, text, classify
 src/content/notebooklm/ driver UI, sélecteurs, organiseur
 src/popup/ src/options/ UI
-tests/                  vitest
+tests/                  vitest (unitaires) · tests/e2e/ (Playwright + faux NotebookLM)
 ```

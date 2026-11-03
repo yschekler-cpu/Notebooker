@@ -117,9 +117,29 @@ export async function saveSubscriptions(subscriptions: Subscription[]): Promise<
   await chrome.storage.local.set({ subscriptions });
 }
 
+let subsChain: Promise<unknown> = Promise.resolve();
+
+/**
+ * Lecture-modification-écriture sérialisée des abonnements (dans un même contexte d'exécution) :
+ * évite qu'une mise à jour concurrente écrase un abonnement ajouté ou des clés « vues ».
+ */
+export function mutateSubscriptions<T>(fn: (subs: Subscription[]) => { subs: Subscription[]; result: T } | Subscription[]): Promise<T | undefined> {
+  const run = subsChain.then(async () => {
+    const out = fn(await getSubscriptions());
+    const { subs, result } = Array.isArray(out) ? { subs: out, result: undefined } : out;
+    await saveSubscriptions(subs);
+    return result;
+  });
+  subsChain = run.catch(() => undefined);
+  return run;
+}
+
 export async function updateSubscription(id: string, patch: Partial<Subscription>): Promise<void> {
-  const subs = await getSubscriptions();
-  await saveSubscriptions(subs.map((s) => (s.id === id ? { ...s, ...patch } : s)));
+  await mutateSubscriptions((subs) => subs.map((s) => (s.id === id ? { ...s, ...patch } : s)));
+}
+
+export async function getSubscription(id: string): Promise<Subscription | undefined> {
+  return (await getSubscriptions()).find((s) => s.id === id);
 }
 
 const MAX_RUNS = 30;

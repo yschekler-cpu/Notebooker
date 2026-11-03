@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildGmailQuery, stripQuoted } from "../src/background/gmail";
+import { buildGmailQuery, exclusionTerm, stripQuoted } from "../src/background/gmail";
 import { blockToMarkdown, clean } from "../src/background/notion";
 import { htmlToText } from "../src/background/text";
 
@@ -23,6 +23,15 @@ describe("Gmail", () => {
       "in:inbox newer_than:2d -from:noreply@dotfile.com -label:kyc",
     );
   });
+  it("normalise les exclusions saisies librement (jamais de terme positif ni de no-op)", () => {
+    expect(exclusionTerm("from:kyc@dotfile.com")).toBe("-from:kyc@dotfile.com");
+    expect(exclusionTerm("-kyc@dotfile.com")).toBe("-from:kyc@dotfile.com");
+    expect(exclusionTerm("Jean Dupont")).toBe('-from:"Jean Dupont"');
+    expect(exclusionTerm("label:KYC confidentiel")).toBe('-label:"KYC confidentiel"');
+    expect(exclusionTerm('subject:"due diligence"')).toBe('-subject:"due diligence"');
+    expect(exclusionTerm("  - ")).toBe("");
+  });
+
   it("retire l'historique cité", () => {
     const body = "Ok pour moi.\n\nLe lun. 2 nov. 2026 à 09:00, Paul <p@x.fr> a écrit :\n> ancien message";
     expect(stripQuoted(body)).toBe("Ok pour moi.");

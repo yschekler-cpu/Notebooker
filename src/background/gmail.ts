@@ -1,3 +1,4 @@
+import { GMAIL_API } from "../shared/endpoints";
 import { htmlToText } from "./text";
 
 /**
@@ -5,7 +6,7 @@ import { htmlToText } from "./text";
  * Nécessite un OAuth client ID de type « Chrome extension » dans manifest.json.
  */
 
-const BASE = "https://gmail.googleapis.com/gmail/v1/users/me";
+const BASE = GMAIL_API;
 
 export interface MailDigestItem {
   id: string;
@@ -18,14 +19,33 @@ export interface MailDigestItem {
   labels: string[];
 }
 
+/** Gmail n'est utilisable que si un vrai OAuth client ID a été renseigné dans le manifest. */
+export function gmailConfigured(): boolean {
+  const id = chrome.runtime.getManifest().oauth2?.client_id ?? "";
+  return /\.apps\.googleusercontent\.com$/.test(id) && !id.startsWith("REPLACE");
+}
+
 export async function getGoogleToken(interactive: boolean): Promise<string> {
-  const r = await chrome.identity.getAuthToken({ interactive });
-  if (!r?.token) throw new Error("Pas de token Google (autorisation Gmail refusée ou non configurée).");
-  return r.token;
+  if (!gmailConfigured()) {
+    throw new Error("Gmail non configuré : renseigner oauth2.client_id dans manifest.json (voir README).");
+  }
+  // getAuthToken peut ne jamais rendre la main (fenêtre de consentement ignorée, client ID invalide) :
+  // borne explicite pour ne pas bloquer le brief.
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error("Autorisation Google sans réponse (délai dépassé).")), interactive ? 120_000 : 20_000);
+  });
+  try {
+    const r = await Promise.race([chrome.identity.getAuthToken({ interactive }), timeout]);
+    if (!r?.token) throw new Error("Pas de token Google (autorisation Gmail refusée).");
+    return r.token;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 async function gmail<T>(token: string, path: string): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, { headers: { Authorization: `Bearer ${token}` } });
+  const res = await fetch(`${BASE}${path}`, { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(30_000) });
   if (res.status === 401) {
     await chrome.identity.removeCachedAuthToken({ token });
     throw new Error("Token Google expiré — relancer (il sera renouvelé).");
@@ -37,11 +57,27 @@ async function gmail<T>(token: string, path: string): Promise<T> {
 /** Construit la requête Gmail : base + fenêtre temporelle + exclusions (expéditeurs, domaines, labels). */
 export function buildGmailQuery(base: string, lookbackHours: number, exclusions: string[]): string {
   const days = Math.max(1, Math.ceil(lookbackHours / 24));
-  const ex = exclusions
-    .map((e) => e.trim())
-    .filter(Boolean)
-    .map((e) => (e.startsWith("label:") ? `-${e}` : `-from:${e}`));
-  return [base.trim(), `newer_than:${days}d`, ...ex].filter(Boolean).join(" ");
+  return [base.trim(), `newer_than:${days}d`, ...exclusions.map(exclusionTerm).filter(Boolean)].filter(Boolean).join(" ");
+}
+
+/**
+ * Normalise une exclusion saisie librement en terme Gmail négatif.
+ * « from:x@y », « -x@y », « label:KYC conf », « Jean Dupont » → -from:x@y, -from:x@y, -label:"KYC conf", -from:"Jean Dupont".
+ * Une exclusion mal formée ne doit JAMAIS devenir un terme positif (qui filtrerait toute la boîte)
+ * ni un no-op (qui laisserait passer des mails KYC).
+ */
+export function exclusionTerm(raw: string): string {
+  let e = raw.trim().replace(/^-+/, "").trim();
+  if (!e) return "";
+  let op = "from";
+  const m = /^(from|label|subject|to|cc|list|category):\s*(.*)$/i.exec(e);
+  if (m) {
+    op = m[1]!.toLowerCase();
+    e = m[2]!.trim();
+  }
+  e = e.replace(/^"(.*)"$/, "$1").replace(/"/g, "");
+  if (!e) return "";
+  return /[\s()]/.test(e) ? `-${op}:"${e}"` : `-${op}:${e}`;
 }
 
 export async function fetchRecentMails(opts: {
@@ -58,15 +94,20 @@ export async function fetchRecentMails(opts: {
   const ids = list.messages ?? [];
   const out: MailDigestItem[] = [];
   // Parallélisme borné pour respecter les quotas Gmail
+  let failed = 0;
   for (let i = 0; i < ids.length; i += 8) {
-    const batch = await Promise.all(
-      ids.slice(i, i + 8).map((m) => gmail<GmailMessage>(token, `/messages/${m.id}?format=full`)),
-    );
-    for (const msg of batch) {
-      const item = toDigest(msg);
+    // allSettled : un message en 404/429 ne doit pas faire perdre tout Gmail du brief.
+    const batch = await Promise.allSettled(ids.slice(i, i + 8).map((m) => gmail<GmailMessage>(token, `/messages/${m.id}?format=full`)));
+    for (const r of batch) {
+      if (r.status === "rejected") {
+        failed++;
+        continue;
+      }
+      const item = toDigest(r.value);
       if (new Date(item.date) >= opts.since) out.push(item);
     }
   }
+  if (failed && out.length === 0) throw new Error(`${failed} message(s) Gmail illisible(s).`);
   return out;
 }
 

@@ -1,20 +1,23 @@
 import type { BackgroundRequest, NotebookSummary } from "../shared/messages";
 import { nextDailyRun, shouldCatchUp } from "../shared/schedule";
-import { getSettings, getSubscriptions, saveSubscriptions, uid } from "../shared/storage";
+import { getSettings, mutateSubscriptions, uid } from "../shared/storage";
 import type { Subscription, Target } from "../shared/types";
 import { lastSuccessfulRun, notify, onAudioAlarm, runBriefing } from "./briefing";
 import { testClaude } from "./claude";
 import { fetchRecentMails } from "./gmail";
 import { audioStatus, listNotebooks, notebookUrl } from "./notebooklm";
-import { NotionClient } from "./notion";
-import { classify } from "./classify";
-import { refreshDueSubscriptions, refreshOne } from "./sync";
+import { NotionClient, clean } from "./notion";
+import { classify, requiredOrigin } from "./classify";
+import { refreshDueSubscriptions, refreshSubscriptionNow, withSyncLock } from "./sync";
 
 const ALARM_BRIEFING = "briefing";
 const ALARM_SYNC = "sync";
 const SYNC_PERIOD_MIN = 15;
 
 // ─── Cycle de vie ─────────────────────────────────────────────────────────────
+
+// Secrets (tokens Notion / Claude) en storage.local : invisibles pour les content scripts.
+void chrome.storage.local.setAccessLevel({ accessLevel: "TRUSTED_CONTEXTS" }).catch(() => undefined);
 
 chrome.runtime.onInstalled.addListener(() => void bootstrap());
 chrome.runtime.onStartup.addListener(() => void bootstrap(true));
@@ -41,7 +44,8 @@ async function scheduleBriefing(): Promise<void> {
 
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === ALARM_BRIEFING) {
-    void runBriefing({ interactive: false }).finally(() => void scheduleBriefing());
+    // Replanifie AVANT d'exécuter : un run bloqué ou un SW tué ne doit pas supprimer le brief du lendemain.
+    void scheduleBriefing().then(() => runBriefing({ interactive: false }));
   } else if (alarm.name === ALARM_SYNC) {
     void refreshDueSubscriptions();
   } else if (alarm.name.startsWith("audio:")) {
@@ -62,73 +66,129 @@ async function knownNotebooks(): Promise<NotebookSummary[]> {
   return list;
 }
 
-async function rebuildContextMenus(): Promise<void> {
+let menuChain: Promise<void> = Promise.resolve();
+
+/** Sérialisé : deux reconstructions concurrentes produiraient des « duplicate id ». */
+function rebuildContextMenus(): Promise<void> {
+  menuChain = menuChain.then(doRebuildContextMenus, doRebuildContextMenus).catch((e: unknown) => console.warn("contextMenus", e));
+  return menuChain;
+}
+
+function createMenu(props: chrome.contextMenus.CreateProperties): void {
+  chrome.contextMenus.create(props, () => void chrome.runtime.lastError); // lastError consommé : pas de bruit console
+}
+
+async function doRebuildContextMenus(): Promise<void> {
   await chrome.contextMenus.removeAll();
   const contexts = ["page", "link", "video"] as [`${chrome.contextMenus.ContextType}`, ...`${chrome.contextMenus.ContextType}`[]];
-  chrome.contextMenus.create({ id: "root", title: "Notebooker : ajouter à…", contexts });
+  createMenu({ id: "root", title: "Notebooker : ajouter à…", contexts });
   const nbs = (await knownNotebooks()).slice(0, 20);
   if (nbs.length === 0) {
-    chrome.contextMenus.create({ id: "hint", parentId: "root", title: "Ouvre NotebookLM une fois pour lister tes notebooks", contexts, enabled: false });
+    createMenu({ id: "hint", parentId: "root", title: "Ouvre NotebookLM une fois pour lister tes notebooks", contexts, enabled: false });
   }
-  for (const nb of nbs) chrome.contextMenus.create({ id: `nb:${nb.id}`, parentId: "root", title: `📓 ${nb.title}`.slice(0, 60), contexts });
+  for (const nb of nbs) createMenu({ id: `nb|${nb.id}`, parentId: "root", title: truncate(`📓 ${nb.title}`, 60), contexts });
   const s = await getSettings();
   for (const k of ["personal", "company"] as const) {
-    for (const db of s.notion[k].briefingRootIds.slice(0, 5)) {
-      chrome.contextMenus.create({ id: `notion:${k}:${db}`, parentId: "root", title: `🗂️ ${s.notion[k].label} · ${db.slice(0, 8)}…`, contexts });
+    for (const raw of s.notion[k].briefingRootIds.slice(0, 5)) {
+      const db = clean(raw);
+      createMenu({ id: `notion|${k}|${db}`, parentId: "root", title: `🗂️ ${s.notion[k].label} · ${db.slice(0, 8)}…`, contexts });
     }
   }
 }
 
+function truncate(s: string, n: number): string {
+  return s.length > n ? `${s.slice(0, n - 1)}…` : s;
+}
+
 chrome.contextMenus.onClicked.addListener((info, tab) => {
-  const url = info.linkUrl ?? info.srcUrl ?? info.pageUrl ?? tab?.url;
-  const title = (info.linkUrl ? info.selectionText : tab?.title) ?? url ?? "Source";
+  const isHttp = (u?: string) => !!u && /^https?:\/\//.test(u);
+  // srcUrl d'une vidéo est souvent un blob: → on retombe sur l'URL de la page.
+  const url = [info.linkUrl, info.srcUrl, info.pageUrl, tab?.url].find(isHttp);
   if (!url) return;
-  const id = String(info.menuItemId);
-  let target: Target | null = null;
-  if (id.startsWith("nb:")) {
-    void knownNotebooks().then(async (nbs) => {
-      const nb = nbs.find((n) => n.id === id.slice(3));
-      target = { kind: "notebooklm", notebookId: id.slice(3), label: nb?.title ?? id.slice(3) };
-      await addFromUrl(url, title, target, 0);
+  // Clic sur un lien : le titre de l'onglet n'est PAS celui du lien → texte sélectionné ou URL.
+  const title = info.linkUrl ? info.selectionText?.trim() || info.linkUrl : (tab?.title ?? url);
+  const [kind, a, b] = String(info.menuItemId).split("|");
+  if (kind === "nb" && a) {
+    void knownNotebooks().then((nbs) => {
+      const label = nbs.find((n) => n.id === a)?.title ?? a;
+      return addFromUrl(url, title, { kind: "notebooklm", notebookId: a, label }, 0);
     });
-  } else if (id.startsWith("notion:")) {
-    const [, ws, db] = id.split(":") as [string, "personal" | "company", string];
-    target = { kind: "notion_database", databaseId: db, workspace: ws, label: db };
-    void addFromUrl(url, title, target, 0);
+  } else if (kind === "notion" && (a === "personal" || a === "company") && b) {
+    void getSettings().then((s) =>
+      addFromUrl(url, title, { kind: "notion_database", databaseId: b, workspace: a, label: `${s.notion[a].label} · ${b.slice(0, 8)}…` }, 0, a),
+    );
   }
 });
 
 // ─── Ajout de sources ─────────────────────────────────────────────────────────
 
+function sameTarget(x: Target, y: Target): boolean {
+  return x.kind === "notebooklm" && y.kind === "notebooklm"
+    ? x.notebookId === y.notebookId
+    : x.kind === "notion_database" && y.kind === "notion_database" && x.databaseId === y.databaseId && x.workspace === y.workspace;
+}
+
 async function addFromUrl(url: string, title: string, target: Target, refreshMinutes: number, workspace?: "personal" | "company"): Promise<void> {
   const { kind, ref } = classify(url);
-  const sub: Subscription = {
-    id: uid(),
-    kind,
-    ref,
-    title,
-    workspace: kind === "notion_page" ? (workspace ?? "company") : undefined,
-    target,
-    refreshMinutes: kind === "feed" && refreshMinutes <= 0 ? 360 : refreshMinutes,
-    lastCheckedAt: null,
-    lastFingerprint: null,
-    seenItemIds: [],
-    enabled: true,
-    lastError: null,
-  };
-  await saveSubscriptions([...(await getSubscriptions()), sub]);
-  try {
-    const n = await refreshOne(sub, await getSettings());
-    notify("Notebooker", `${n} source(s) ajoutée(s) à « ${target.label} »${sub.refreshMinutes > 0 ? ` — suivi toutes les ${sub.refreshMinutes} min` : ""}.`);
-  } catch (e) {
-    notify("Notebooker : échec d'ajout", e instanceof Error ? e.message : String(e));
+  const freq = kind === "feed" && refreshMinutes <= 0 ? 360 : refreshMinutes;
+
+  // Permission hôte requise (flux, page suivie) : sans elle, le premier passage échouerait.
+  const origin = requiredOrigin(url, freq);
+  if (origin && !(await chrome.permissions.contains({ origins: [origin] }))) {
+    const granted = await chrome.permissions.request({ origins: [origin] }).catch(() => false);
+    if (!granted) {
+      notify("Notebooker : permission requise", `Autorise l'accès à ${new URL(origin.replace("/*", "")).host} via le popup Notebooker pour suivre cette source.`);
+      return;
+    }
   }
+
+  const outcome = await mutateSubscriptions((subs) => {
+    const existing = subs.find((s) => s.ref === ref && sameTarget(s.target, target));
+    if (existing) {
+      // Déjà suivi vers cette cible : mise à jour de la fréquence au lieu d'un doublon.
+      const updated: Subscription = { ...existing, refreshMinutes: freq, enabled: true };
+      return { subs: subs.map((s) => (s.id === existing.id ? updated : s)), result: { sub: updated, alreadyPushed: !!existing.lastFingerprint } };
+    }
+    const sub: Subscription = {
+      id: uid(),
+      kind,
+      ref,
+      title,
+      workspace: kind === "notion_page" ? (workspace ?? "company") : undefined,
+      target,
+      refreshMinutes: freq,
+      lastCheckedAt: null,
+      lastFingerprint: null,
+      seenItemIds: [],
+      enabled: true,
+      lastError: null,
+    };
+    return { subs: [...subs, sub], result: { sub, alreadyPushed: false } };
+  });
+  if (!outcome) return;
+  const { sub, alreadyPushed } = outcome;
+  const follow = sub.refreshMinutes > 0 ? ` — suivi toutes les ${sub.refreshMinutes} min` : "";
+  if (alreadyPushed && sub.kind !== "url") {
+    notify("Notebooker", `Déjà présent dans « ${target.label} »${follow}.`);
+    return;
+  }
+  const r = await refreshSubscriptionNow(sub.id);
+  if (r.error) notify("Notebooker : échec d'ajout", r.error.slice(0, 250));
+  else if (alreadyPushed && r.pushed === 0) notify("Notebooker", `Déjà présent dans « ${target.label} »${follow}.`);
+  else notify("Notebooker", `${r.pushed} source(s) ajoutée(s) à « ${target.label} »${follow}.`);
 }
 
 // ─── Routeur de messages (popup / options / content) ──────────────────────────
 
-chrome.runtime.onMessage.addListener((req: BackgroundRequest, _sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((req: BackgroundRequest, sender, sendResponse) => {
   if (!req || !("type" in req)) return false;
+  // Seules les pages de l'extension (popup, options) sont de confiance. Un content script — qui tourne
+  // dans une page web — ne peut qu'informer des notebooks visibles : aucune action sensible.
+  const trusted = sender.id === chrome.runtime.id && (sender.url ?? "").startsWith(chrome.runtime.getURL(""));
+  if (!trusted && req.type !== "notebooksSeen") {
+    sendResponse({ ok: false, error: "forbidden" });
+    return false;
+  }
   handle(req)
     .then((data) => sendResponse({ ok: true, data }))
     .catch((e: unknown) => sendResponse({ ok: false, error: e instanceof Error ? e.message : String(e) }));
@@ -153,6 +213,14 @@ async function handle(req: BackgroundRequest): Promise<unknown> {
       return list;
     }
     case "notebooksSeen": {
+      // Seul message accepté depuis une page web : payload validé (UUID, titres bornés, liste bornée).
+      if (!Array.isArray(req.notebooks)) return false;
+      const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      req.notebooks = req.notebooks
+        .filter((n) => n && typeof n.id === "string" && UUID.test(n.id) && typeof n.title === "string")
+        .slice(0, 300)
+        .map((n) => ({ id: n.id.toLowerCase(), title: n.title.replace(/\s+/g, " ").trim().slice(0, 120) }));
+      if (req.notebooks.length === 0) return false; // une page vide ne doit pas effacer la liste connue
       const prev = await knownNotebooks();
       const changed = JSON.stringify(prev) !== JSON.stringify(req.notebooks);
       if (changed) {
@@ -173,5 +241,13 @@ async function handle(req: BackgroundRequest): Promise<unknown> {
     }
     case "testClaude":
       return testClaude((await getSettings()).claude);
+    case "subscriptionOp":
+      return withSyncLock(() =>
+        mutateSubscriptions((subs) => {
+          if (req.op === "add") return subs.some((x) => x.ref === req.sub.ref && sameTarget(x.target, req.sub.target)) ? subs : [...subs, req.sub];
+          if (req.op === "delete") return subs.filter((x) => x.id !== req.id);
+          return subs.map((x) => (x.id === req.id ? { ...x, enabled: !x.enabled } : x));
+        }),
+      );
   }
 }

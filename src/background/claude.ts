@@ -1,4 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
+import { ANTHROPIC_BASE_URL } from "../shared/endpoints";
 import type { Settings } from "../shared/types";
 
 /**
@@ -16,8 +17,14 @@ import type { Settings } from "../shared/types";
 const OAUTH_BETA = "oauth-2025-04-20";
 const FALLBACK_BETA = "server-side-fallback-2026-07-01";
 
-function client(cfg: Settings["claude"]): Anthropic {
-  const base = { dangerouslyAllowBrowser: true, maxRetries: 2 };
+/** `fetchImpl` injectable pour les tests ; en extension, le fetch natif du service worker. */
+export function client(cfg: Settings["claude"], fetchImpl?: typeof fetch): Anthropic {
+  const base = {
+    dangerouslyAllowBrowser: true,
+    maxRetries: 2,
+    ...(ANTHROPIC_BASE_URL ? { baseURL: ANTHROPIC_BASE_URL } : {}),
+    ...(fetchImpl ? { fetch: fetchImpl } : {}),
+  };
   if (cfg.authMode === "oauth_token") {
     if (!cfg.oauthToken) throw new Error("Jeton OAuth Claude manquant.");
     return new Anthropic({ ...base, authToken: cfg.oauthToken });
@@ -26,8 +33,20 @@ function client(cfg: Settings["claude"]): Anthropic {
   return new Anthropic({ ...base, apiKey: cfg.apiKey });
 }
 
-function betas(cfg: Settings["claude"]): string[] {
-  return cfg.authMode === "oauth_token" ? [FALLBACK_BETA, OAUTH_BETA] : [FALLBACK_BETA];
+function betas(cfg: Settings["claude"], withFallback: boolean): string[] {
+  const list = withFallback ? [FALLBACK_BETA] : [];
+  if (cfg.authMode === "oauth_token") list.push(OAUTH_BETA);
+  return list;
+}
+
+/** Les fallbacks serveur sont un plus, pas un prérequis : si l'API les rejette (400), on retente sans. */
+async function withFallbackRetry<T>(run: (withFallback: boolean) => Promise<T>): Promise<T> {
+  try {
+    return await run(true);
+  } catch (e) {
+    if (e instanceof Anthropic.BadRequestError && /fallback/i.test(e.message)) return run(false);
+    throw e;
+  }
 }
 
 const SYSTEM = `Tu prépares le brief matinal d'un Product Manager d'une plateforme d'investissement en Private Equity.
@@ -39,19 +58,22 @@ Produis un document Markdown en français, structuré ainsi :
 4. "## Pour info" — le reste, en une ligne par sujet.
 Règles : regroupe les doublons (un fil = un sujet), ignore newsletters/notifications automatiques sans action, cite la source entre crochets ([Mail: objet] ou [Notion: titre]). N'invente rien.`;
 
-export async function synthesizeBriefing(cfg: Settings["claude"], corpus: string): Promise<string> {
-  const c = client(cfg);
-  const stream = c.beta.messages.stream({
-    model: cfg.model,
-    max_tokens: 16000,
-    betas: betas(cfg),
-    fallbacks: "default",
-    thinking: { type: "adaptive" },
-    output_config: { effort: "medium" },
-    system: SYSTEM,
-    messages: [{ role: "user", content: corpus }],
-  });
-  const msg = await stream.finalMessage();
+export async function synthesizeBriefing(cfg: Settings["claude"], corpus: string, fetchImpl?: typeof fetch): Promise<string> {
+  const c = client(cfg, fetchImpl);
+  const msg = await withFallbackRetry((withFallback) =>
+    c.beta.messages
+      .stream({
+        model: cfg.model,
+        max_tokens: 16000,
+        betas: betas(cfg, withFallback),
+        ...(withFallback ? { fallbacks: "default" as const } : {}),
+        thinking: { type: "adaptive" },
+        output_config: { effort: "medium" },
+        system: SYSTEM,
+        messages: [{ role: "user", content: corpus }],
+      })
+      .finalMessage(),
+  );
   if (msg.stop_reason === "refusal") {
     throw new Error("Claude a refusé la requête (stop_reason=refusal) — brief généré sans synthèse.");
   }
@@ -61,19 +83,22 @@ export async function synthesizeBriefing(cfg: Settings["claude"], corpus: string
     .join("\n")
     .trim();
   if (!text) throw new Error(`Réponse Claude vide (stop_reason=${msg.stop_reason}).`);
+  if (msg.stop_reason === "max_tokens") return `${text}\n\n[… synthèse tronquée]`;
   return text;
 }
 
-export async function testClaude(cfg: Settings["claude"]): Promise<string> {
-  const c = client(cfg);
-  const msg = await c.beta.messages.create({
-    model: cfg.model,
-    max_tokens: 256,
-    betas: betas(cfg),
-    fallbacks: "default",
-    output_config: { effort: "low" },
-    messages: [{ role: "user", content: "Réponds uniquement: OK" }],
-  });
+export async function testClaude(cfg: Settings["claude"], fetchImpl?: typeof fetch): Promise<string> {
+  const c = client(cfg, fetchImpl);
+  const msg = await withFallbackRetry((withFallback) =>
+    c.beta.messages.create({
+      model: cfg.model,
+      max_tokens: 2048, // la réflexion (toujours active sur ce modèle) consomme une partie du budget
+      betas: betas(cfg, withFallback),
+      ...(withFallback ? { fallbacks: "default" as const } : {}),
+      output_config: { effort: "low" },
+      messages: [{ role: "user", content: "Réponds uniquement: OK" }],
+    }),
+  );
   const block = msg.content.find((b) => b.type === "text");
-  return block && block.type === "text" ? block.text : String(msg.stop_reason);
+  return block && block.type === "text" ? `${block.text.trim()} (${msg.model})` : `stop_reason=${msg.stop_reason}`;
 }

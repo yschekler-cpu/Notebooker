@@ -24,8 +24,6 @@
     "contextMenus",
     "notifications",
     "identity",
-    "tabs",
-    "scripting",
     "activeTab"
   ],
   "host_permissions": [

@@ -1,4 +1,5 @@
 import type { DriverCommand, DriverResponse, NotebookSummary } from "../shared/messages";
+import { NOTEBOOKLM_ORIGIN } from "../shared/endpoints";
 import { getSettings } from "../shared/storage";
 import type { SourcePayload } from "../shared/types";
 
@@ -19,8 +20,8 @@ export function enqueue<T>(job: () => Promise<T>): Promise<T> {
 async function baseUrl(): Promise<string> {
   const s = await getSettings();
   return s.notebooklm.accountIndex > 0
-    ? `https://notebooklm.google.com/u/${s.notebooklm.accountIndex}/`
-    : "https://notebooklm.google.com/";
+    ? `${NOTEBOOKLM_ORIGIN}/u/${s.notebooklm.accountIndex}/`
+    : `${NOTEBOOKLM_ORIGIN}/`;
 }
 
 export async function notebookUrl(notebookId: string): Promise<string> {
@@ -28,7 +29,7 @@ export async function notebookUrl(notebookId: string): Promise<string> {
 }
 
 /** Garde le service worker éveillé pendant les jobs longs (appel d'API extension < 30 s). */
-function keepAlive(): () => void {
+export function keepAlive(): () => void {
   const t = setInterval(() => void chrome.runtime.getPlatformInfo(), 20_000);
   return () => clearInterval(t);
 }
@@ -41,24 +42,28 @@ export class NotebookSession {
     const tab = await chrome.tabs.create({ url: `${await baseUrl()}${path}`, active: !s.notebooklm.backgroundTabs });
     if (tab.id === undefined) throw new Error("Impossible d'ouvrir NotebookLM.");
     const session = new NotebookSession(tab.id);
-    await session.waitReady();
+    try {
+      await session.waitReady();
+    } catch (e) {
+      await session.close(); // pas d'onglet orphelin (ex. session Google expirée → page de login)
+      throw e;
+    }
     return session;
   }
 
-  private async waitReady(timeoutMs = 45_000): Promise<void> {
+  async waitReady(timeoutMs = 45_000): Promise<void> {
     const start = Date.now();
     while (Date.now() - start < timeoutMs) {
       try {
-        const r = await this.send<{ url: string }>({ cmd: "ping" });
-        if (r.url.includes("accounts.google.com")) throw new Error("Non connecté à NotebookLM (login Google requis).");
+        await this.send<{ url: string }>({ cmd: "ping" });
         await new Promise((res) => setTimeout(res, 1500)); // laisse l'app Angular s'hydrater
         return;
-      } catch (e) {
-        if (e instanceof Error && e.message.startsWith("Non connecté")) throw e;
+      } catch {
+        // Content script pas encore injecté (ou page de login Google, où il ne s'exécute jamais)
         await new Promise((res) => setTimeout(res, 1000));
       }
     }
-    throw new Error("NotebookLM ne répond pas (content script non chargé).");
+    throw new Error("NotebookLM ne répond pas — vérifie que tu es connecté à notebooklm.google.com avec le bon compte Google.");
   }
 
   async send<T>(command: DriverCommand): Promise<T> {
@@ -66,6 +71,26 @@ export class NotebookSession {
     if (!r) throw new Error("Pas de réponse du content script.");
     if (!r.ok) throw new Error(`NotebookLM/${command.cmd}: ${r.error}`);
     return r.data;
+  }
+
+  /**
+   * Création robuste : si NotebookLM fait une navigation complète (et non pushState),
+   * le canal de message est coupé avant la réponse → on relit l'ID depuis l'URL du nouvel onglet.
+   */
+  async createNotebook(title: string): Promise<string> {
+    const known = (await this.send<NotebookSummary[]>({ cmd: "listNotebooks" })).map((n) => n.id.toLowerCase());
+    try {
+      return (await this.send<{ notebookId: string }>({ cmd: "createNotebook", title, knownIds: known })).notebookId;
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (!/port closed|Receiving end|back\/forward cache|message channel/i.test(msg)) throw e;
+      await this.waitReady();
+      const { notebookId } = await this.send<{ notebookId: string | null }>({ cmd: "ping" });
+      if (!notebookId) throw new Error("Création du notebook non confirmée.");
+      if (known.includes(notebookId.toLowerCase())) throw new Error("Notebook existant ouvert au lieu d'un nouveau — abandon.");
+      await this.send({ cmd: "renameNotebook", title }).catch(() => undefined);
+      return notebookId;
+    }
   }
 
   async close(): Promise<void> {
@@ -88,6 +113,8 @@ export function listNotebooks(): Promise<NotebookSummary[]> {
 
 export interface PushResult {
   added: number;
+  /** Index (dans `sources`) des sources non ajoutées. */
+  failed: number[];
   errors: string[];
 }
 
@@ -95,13 +122,14 @@ export function addSources(notebookId: string, sources: SourcePayload[]): Promis
   return enqueue(async () => {
     const stop = keepAlive();
     const s = await NotebookSession.open(`notebook/${notebookId}`);
-    const res: PushResult = { added: 0, errors: [] };
+    const res: PushResult = { added: 0, failed: [], errors: [] };
     try {
-      for (const src of sources) {
+      for (const [i, src] of sources.entries()) {
         try {
           await s.send({ cmd: "addSource", source: src });
           res.added++;
         } catch (e) {
+          res.failed.push(i);
           res.errors.push(`${src.title}: ${e instanceof Error ? e.message : String(e)}`);
         }
       }
@@ -113,19 +141,25 @@ export function addSources(notebookId: string, sources: SourcePayload[]): Promis
   });
 }
 
-/** Crée un notebook, y ajoute les sources et lance l'Audio Overview. */
+/**
+ * Crée un notebook, y ajoute les sources et lance l'Audio Overview.
+ * `onCreated` est appelé dès la création (traçabilité/rétention même si une étape suivante échoue).
+ * Un échec audio est loggué mais ne fait pas échouer le brief : le notebook reste exploitable.
+ */
 export function createNotebookWithAudio(
   title: string,
   sources: SourcePayload[],
   audioInstructions: string,
   log: (m: string, level?: "info" | "warn" | "error") => void,
-): Promise<{ notebookId: string; added: number }> {
+  onCreated: (notebookId: string) => Promise<void> = async () => undefined,
+): Promise<{ notebookId: string; added: number; audioStarted: boolean }> {
   return enqueue(async () => {
     const stop = keepAlive();
     const s = await NotebookSession.open();
     try {
-      const { notebookId } = await s.send<{ notebookId: string }>({ cmd: "createNotebook", title });
+      const notebookId = await s.createNotebook(title);
       log(`Notebook créé : ${notebookId}`);
+      await onCreated(notebookId);
       let added = 0;
       for (const src of sources) {
         try {
@@ -136,11 +170,17 @@ export function createNotebookWithAudio(
         }
       }
       log(`${added}/${sources.length} sources ajoutées`);
+      let audioStarted = false;
       if (added > 0) {
-        await s.send({ cmd: "generateAudio", instructions: audioInstructions });
-        log("Génération de l'Audio Overview lancée");
+        try {
+          await s.send({ cmd: "generateAudio", instructions: audioInstructions });
+          audioStarted = true;
+          log("Génération de l'Audio Overview lancée");
+        } catch (e) {
+          log(`Audio Overview non lancé : ${e instanceof Error ? e.message : String(e)} — lance-le manuellement dans le notebook.`, "warn");
+        }
       }
-      return { notebookId, added };
+      return { notebookId, added, audioStarted };
     } finally {
       stop();
       await s.close();

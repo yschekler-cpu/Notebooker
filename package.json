@@ -2,14 +2,16 @@
   "name": "notebooker",
   "version": "0.1.0",
   "private": true,
-  "description": "Extension Chrome : organisation NotebookLM, sources auto-synchronisées et podcast de brief quotidien.",
+  "description": "Extension Chrome : organisation NotebookLM, sources auto-synchronis\u00e9es et podcast de brief quotidien.",
   "type": "module",
   "scripts": {
     "build": "node build.mjs",
     "watch": "node build.mjs --watch",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "zip": "npm run build && cd dist && zip -r ../notebooker.zip ."
+    "zip": "npm run build && cd dist && zip -r ../notebooker.zip .",
+    "e2e": "node build.mjs --e2e && node tests/e2e/run.mjs",
+    "build:e2e": "node build.mjs --e2e"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.4.0"

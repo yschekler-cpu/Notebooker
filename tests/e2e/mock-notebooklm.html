@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>NotebookLM (mock)</title>
+<!--
+  Faux NotebookLM pour les tests E2E. Reproduit les traits qui piègent un driver UI :
+  - ligatures d'icônes Material dans les boutons (<mat-icon>add</mat-icon>)
+  - cartes de notebooks SANS <a href> (navigation JS + pushState), ID dans un attribut
+  - modales dans un overlay CDK, bouton « Insert » désactivé tant que le champ est vide
+  - boutons leurres aux libellés proches (« Add note », « Discover sources »)
+  - génération audio asynchrone persistée (survit à la fermeture de l'onglet)
+-->
+<style>
+  body { font-family: sans-serif; margin: 0; }
+  .grid { display: flex; flex-wrap: wrap; gap: 12px; padding: 16px 16px 16px 270px; }
+  project-button { display: block; width: 220px; height: 140px; }
+  mat-card { display: block; height: 100%; border: 1px solid #ccc; border-radius: 12px; padding: 12px; box-sizing: border-box; cursor: pointer; position: relative; }
+  .cdk-overlay-container { position: fixed; inset: 0; pointer-events: none; }
+  .cdk-overlay-pane { pointer-events: auto; position: fixed; top: 80px; left: 30%; width: 480px; background: #fff; border: 1px solid #999; padding: 16px; }
+  mat-icon { font-family: monospace; font-size: 10px; margin-right: 4px; }
+  textarea, input { display: block; width: 100%; margin: 8px 0; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div class="cdk-overlay-container" id="overlay"></div>
+<script>
+(() => {
+  const LS = "mockNlm";
+  const load = () => JSON.parse(localStorage.getItem(LS) || '{"notebooks":[]}');
+  const save = (s) => localStorage.setItem(LS, JSON.stringify(s));
+  const uuid = () => crypto.randomUUID();
+  const app = document.getElementById("app");
+  const overlay = document.getElementById("overlay");
+  const nbIdFromPath = () => (/\/notebook\/([0-9a-f-]{36})/.exec(location.pathname) || [])[1];
+  const el = (html) => { const t = document.createElement("template"); t.innerHTML = html.trim(); return t.content.firstElementChild; };
+
+  // Seed : 3 notebooks au premier chargement
+  const s0 = load();
+  if (!s0.seeded) {
+    s0.seeded = true;
+    s0.notebooks = [
+      { id: "11111111-2222-3333-4444-555555555555", title: "KYC Belgique", sources: [], audio: null },
+      { id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", title: "Roadmap Q1", sources: [], audio: null },
+      { id: "99999999-8888-7777-6666-555555555555", title: "Veille ELTIF", sources: [], audio: null },
+      // Piège : titre commençant par « Créer » sur une carte cliquable (role=button)
+      { id: "cccccccc-0000-4000-8000-000000000000", title: "Créer une holding", sources: [], audio: null },
+    ];
+    save(s0);
+  }
+
+  function closeDialogs() { overlay.innerHTML = ""; }
+
+  function dialog(inner) {
+    closeDialogs();
+    const pane = el(`<div class="cdk-overlay-pane"><mat-dialog-container role="dialog">${inner}</mat-dialog-container></div>`);
+    overlay.appendChild(pane);
+    pane.addEventListener("keydown", (e) => e.key === "Escape" && closeDialogs());
+    return pane;
+  }
+
+  function renderHome() {
+    closeDialogs();
+    const s = load();
+    app.innerHTML = `
+      <header><h1>NotebookLM</h1>
+        <span class="create-slot"></span>
+        <button><mat-icon>settings</mat-icon>Settings</button>
+      </header>
+      <div class="grid">${s.notebooks.map((n) => `
+        <project-button id="project-${n.id}">
+          <mat-card role="button" aria-label="${n.title}">
+            <span class="project-button-title">${n.title}</span>
+            <div>${n.sources.length} sources</div>
+            <button class="more" aria-label="Project Actions Menu"><mat-icon>more_vert</mat-icon></button>
+          </mat-card>
+        </project-button>`).join("")}
+      </div>`;
+    // Le bouton « Create new » n'apparaît qu'après hydratation (800 ms), comme sur l'app réelle
+    const slot = app.querySelector(".create-slot");
+    setTimeout(() => {
+      if (!slot.isConnected) return;
+      slot.appendChild(el(`<button class="create"><mat-icon>add</mat-icon><span>Create new</span></button>`));
+      slot.querySelector(".create").onclick = onCreate;
+    }, 800);
+    const onCreate = () => {
+      const st = load();
+      const id = uuid();
+      st.notebooks.unshift({ id, title: "Untitled notebook", sources: [], audio: null });
+      save(st);
+      history.pushState({}, "", `/notebook/${id}`);
+      renderNotebook(true);
+    };
+    app.querySelectorAll("project-button").forEach((pb) => {
+      const id = pb.id.replace("project-", "");
+      pb.querySelector("mat-card").onclick = () => { history.pushState({}, "", `/notebook/${id}`); renderNotebook(false); };
+      pb.querySelector(".more").onclick = (e) => {
+        e.stopPropagation();
+        const menu = el(`<div class="cdk-overlay-pane" role="menu"><button role="menuitem"><mat-icon>edit</mat-icon>Edit title</button><button role="menuitem" class="del"><mat-icon>delete</mat-icon>Delete</button></div>`);
+        closeDialogs(); overlay.appendChild(menu);
+        menu.querySelector(".del").onclick = () => {
+          const n = load().notebooks.find((x) => x.id === id);
+          const d = dialog(`<p>Delete notebook "${n.title}"? This can't be undone.</p><button class="cancel">Cancel</button><button class="ok">Delete</button>`);
+          d.querySelector(".cancel").onclick = closeDialogs;
+          d.querySelector(".ok").onclick = () => { const st = load(); st.notebooks = st.notebooks.filter((x) => x.id !== id); save(st); renderHome(); };
+        };
+      };
+    });
+  }
+
+  function openAddSource(nbId) {
+    const d = dialog(`<h2>Add sources</h2>
+      <button><mat-icon>search</mat-icon>Discover sources</button>
+      <mat-chip-option role="option"><mat-icon>drive</mat-icon>Google Docs</mat-chip-option>
+      <mat-chip-option role="option" data-k="web"><mat-icon>web</mat-icon>Website</mat-chip-option>
+      <mat-chip-option role="option" data-k="yt"><mat-icon>video_youtube</mat-icon>YouTube</mat-chip-option>
+      <mat-chip-option role="option" data-k="text"><mat-icon>content_paste</mat-icon>Copied text</mat-chip-option>
+      <div class="form"></div>`);
+    d.querySelectorAll("[data-k]").forEach((chip) => chip.onclick = () => {
+      const k = chip.dataset.k;
+      const form = d.querySelector(".form");
+      form.innerHTML = k === "text" ? `<textarea aria-label="Paste text here"></textarea>` : `<input type="url" aria-label="Paste URL" />`;
+      form.appendChild(el(`<button class="insert" disabled>Insert</button>`));
+      const field = form.querySelector("textarea, input");
+      const btn = form.querySelector(".insert");
+      field.addEventListener("input", () => (btn.disabled = !field.value.trim()));
+      btn.onclick = () => {
+        const v = field.value;
+        if (k !== "text" && !/^https?:\/\//.test(v)) return; // URL invalide : la modale reste ouverte
+        setTimeout(() => {
+          const st = load();
+          const nb = st.notebooks.find((x) => x.id === nbId);
+          nb.sources.push({ kind: k, value: v, title: k === "text" ? (v.split("\n")[0] || "Pasted text").replace(/^# /, "") : v });
+          save(st);
+          closeDialogs();
+          renderNotebook(false);
+        }, 300);
+      };
+    });
+  }
+
+  function renderNotebook(fresh) {
+    const id = nbIdFromPath();
+    const nb = load().notebooks.find((x) => x.id === id);
+    if (!nb) { app.innerHTML = "<p>Notebook not found</p>"; return; }
+    const audio = nb.audio;
+    const ready = audio && Date.now() - audio.startedAt > 3000;
+    app.innerHTML = `
+      <header><input class="title-input" value="${nb.title.replace(/"/g, "&quot;")}" /></header>
+      <section class="sources"><h3>Sources</h3>
+        <button class="add-src"><mat-icon>add</mat-icon>Add source</button>
+        <ul>${nb.sources.map((x) => `<li>${x.title}</li>`).join("")}</ul>
+      </section>
+      <section class="studio"><h3>Studio</h3>
+        <button><mat-icon>note_add</mat-icon>Add note</button>
+        <div class="audio-card"><h4>Audio Overview</h4>
+          ${!audio ? `<button class="customize">Customize</button><button class="gen">Generate</button>`
+            : ready ? `<audio controls src="data:audio/mp3;base64,"></audio><button><mat-icon>play_arrow</mat-icon>Play</button>`
+            : `<p>Generating conversation… This may take a few minutes.</p>`}
+        </div>
+      </section>`;
+    const title = app.querySelector(".title-input");
+    const commit = () => { const st = load(); st.notebooks.find((x) => x.id === id).title = title.value; save(st); };
+    title.addEventListener("keydown", (e) => e.key === "Enter" && commit());
+    title.addEventListener("blur", commit);
+    app.querySelector(".add-src").onclick = () => openAddSource(id);
+    const startAudio = (instructions) => {
+      const st = load();
+      st.notebooks.find((x) => x.id === id).audio = { startedAt: Date.now(), instructions };
+      save(st); closeDialogs(); renderNotebook(false);
+      setTimeout(() => nbIdFromPath() === id && renderNotebook(false), 3200);
+    };
+    const cust = app.querySelector(".customize");
+    if (cust) cust.onclick = () => {
+      const d = dialog(`<h2>Customize Audio Overview</h2><textarea aria-label="What should the AI hosts focus on"></textarea><button class="go">Generate</button>`);
+      d.querySelector(".go").onclick = () => startAudio(d.querySelector("textarea").value);
+    };
+    const gen = app.querySelector(".gen");
+    if (gen) gen.onclick = () => startAudio("");
+    // Génération côté « serveur » : l'audio devient prêt même si l'onglet a été rechargé entre-temps
+    if (audio && !ready) setTimeout(() => nbIdFromPath() === id && renderNotebook(false), 3100 - (Date.now() - audio.startedAt));
+    if (fresh) openAddSource(id);
+  }
+
+  const route = () => (nbIdFromPath() ? renderNotebook(false) : renderHome());
+  window.addEventListener("popstate", route);
+  route();
+})();
+</script>
+</body>
+</html>

@@ -1,3 +1,4 @@
+import { NOTION_API } from "../shared/endpoints";
 import type { NotionWorkspaceConfig } from "../shared/types";
 
 /**
@@ -7,7 +8,7 @@ import type { NotionWorkspaceConfig } from "../shared/types";
  */
 
 const NOTION_VERSION = "2022-06-28";
-const BASE = "https://api.notion.com/v1";
+const BASE = NOTION_API;
 
 type Json = Record<string, unknown>;
 
@@ -27,6 +28,7 @@ export class NotionClient {
 
   private async call<T = Json>(path: string, init: RequestInit = {}, attempt = 0): Promise<T> {
     const res = await fetch(`${BASE}${path}`, {
+      signal: AbortSignal.timeout(30_000),
       ...init,
       headers: {
         Authorization: `Bearer ${this.ws.token}`,
@@ -74,19 +76,30 @@ export class NotionClient {
     return out;
   }
 
-  async queryDatabase(databaseId: string, editedSince?: Date, limit = 50): Promise<NotionPageLite[]> {
-    const body: Json = {
-      page_size: Math.min(limit, 100),
-      sorts: [{ timestamp: "last_edited_time", direction: "descending" }],
-    };
-    if (editedSince) {
-      body.filter = { timestamp: "last_edited_time", last_edited_time: { on_or_after: editedSince.toISOString() } };
-    }
-    const r = await this.call<{ results: Json[] }>(`/databases/${clean(databaseId)}/query`, {
-      method: "POST",
-      body: JSON.stringify(body),
-    });
-    return r.results.map(toLite);
+  /**
+   * Pages d'une base, filtrées sur `last_edited_time >= editedSince`, paginées jusqu'à `limit`.
+   * `ascending` = du plus ancien au plus récent (curseur de synchro sans trou).
+   */
+  async queryDatabase(databaseId: string, editedSince?: Date, limit = 50, ascending = false): Promise<NotionPageLite[]> {
+    const out: NotionPageLite[] = [];
+    let cursor: string | undefined;
+    do {
+      const body: Json = {
+        page_size: Math.min(limit - out.length, 100),
+        sorts: [{ timestamp: "last_edited_time", direction: ascending ? "ascending" : "descending" }],
+      };
+      if (cursor) body.start_cursor = cursor;
+      if (editedSince) {
+        body.filter = { timestamp: "last_edited_time", last_edited_time: { on_or_after: editedSince.toISOString() } };
+      }
+      const r = await this.call<{ results: Json[]; has_more: boolean; next_cursor: string | null }>(`/databases/${clean(databaseId)}/query`, {
+        method: "POST",
+        body: JSON.stringify(body),
+      });
+      out.push(...r.results.map(toLite));
+      cursor = r.has_more ? (r.next_cursor ?? undefined) : undefined;
+    } while (cursor && out.length < limit);
+    return out;
   }
 
   async getPage(pageId: string): Promise<NotionPageLite> {

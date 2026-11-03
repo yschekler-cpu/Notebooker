@@ -8,18 +8,18 @@
  */
 
 export const LABELS = {
-  createNotebook: ["create new", "new notebook", "créer", "nouveau notebook", "créer un notebook"],
+  createNotebook: ["create new notebook", "new notebook", "create new", "créer un notebook", "nouveau notebook", "créer"],
   addSource: ["add source", "add sources", "ajouter une source", "ajouter des sources", "ajouter"],
-  chipWebsite: ["website", "site web", "site", "lien", "link"],
+  chipWebsite: ["website", "site web", "lien vers un site", "site", "lien", "link"],
   chipYouTube: ["youtube"],
   chipText: ["copied text", "paste text", "texte copié", "coller du texte", "texte"],
   insert: ["insert", "insérer", "add", "ajouter"],
   audioCustomize: ["customize", "personnaliser"],
   audioGenerate: ["generate", "générer"],
   audioOverview: ["audio overview", "résumé audio", "aperçu audio"],
-  audioPlay: ["play", "lire", "lecture", "load", "charger"],
-  audioGenerating: ["generating", "génération", "en cours"],
-  moreMenu: ["more", "plus", "options", "more options", "plus d'options"],
+  audioPlay: ["play", "lire", "lecture", "charger l'audio", "load audio"],
+  audioGenerating: ["generating", "génération en cours", "generation en cours", "génération"],
+  moreMenu: ["more options", "more actions", "plus d'options", "plus d'actions", "project actions", "more", "plus", "options"],
   delete: ["delete", "supprimer"],
   confirm: ["delete", "supprimer", "confirm", "confirmer", "ok"],
 };
@@ -32,6 +32,8 @@ export const SELECTORS = {
   titleInput: "input.title-input, input[aria-label*='title' i], input[aria-label*='titre' i]",
 };
 
+/** UUID strict (évite de capturer le « - » de `project-<uuid>`). */
+export const UUID_ANY = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 const UUID_RE = /\/notebook\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i;
 
 export function notebookIdFromUrl(url: string = location.href): string | null {
@@ -54,24 +56,53 @@ export function isVisible(el: Element): boolean {
   return st.visibility !== "hidden" && st.display !== "none";
 }
 
+const ICON_SELECTOR = "mat-icon, .material-icons, .material-symbols-outlined, .material-symbols-rounded, .google-symbols, [aria-hidden='true']";
+
+/**
+ * Texte visible d'un élément SANS les ligatures d'icônes Material
+ * (`<mat-icon>add</mat-icon>Ajouter` → « Ajouter », pas « addAjouter »).
+ */
+export function labelText(el: Element): string {
+  let out = "";
+  const walk = (n: Node) => {
+    if (n.nodeType === Node.TEXT_NODE) {
+      out += ` ${n.textContent ?? ""}`;
+      return;
+    }
+    if (n.nodeType !== Node.ELEMENT_NODE) return;
+    const e = n as Element;
+    if (e !== el && e.matches(ICON_SELECTOR)) return;
+    e.childNodes.forEach(walk);
+  };
+  walk(el);
+  return norm(out);
+}
+
 /**
  * Trouve un élément cliquable dont l'aria-label ou le texte correspond à un des libellés.
- * Priorité : correspondance exacte > préfixe > inclusion, pour éviter les faux positifs.
+ * Score = niveau de correspondance (exacte > préfixe > inclusion) puis ordre du libellé :
+ * les libellés en tête de liste (spécifiques) priment sur les génériques en fin de liste.
  */
-export function findClickable(labels: string[], root: ParentNode = document): HTMLElement | null {
+export function findClickable(
+  labels: string[],
+  root: ParentNode = document,
+  opts: { exclude?: (el: HTMLElement) => boolean; exactOnly?: boolean } = {},
+): HTMLElement | null {
   const candidates = Array.from(
-    root.querySelectorAll<HTMLElement>("button, [role='button'], [role='tab'], [role='menuitem'], a, mat-chip, mat-chip-option, label"),
-  ).filter(isVisible);
+    root.querySelectorAll<HTMLElement>("button, [role='button'], [role='tab'], [role='menuitem'], [role='option'], a, mat-chip, mat-chip-option, label"),
+  ).filter((el) => isVisible(el) && !(el as HTMLButtonElement).disabled && !el.closest(".notebooker-badge") && !opts.exclude?.(el));
   const wanted = labels.map(norm);
   const score = (el: HTMLElement): number => {
-    const texts = [el.getAttribute("aria-label"), el.textContent].map(norm).filter(Boolean);
+    const texts = [el.getAttribute("aria-label"), labelText(el)].map(norm).filter(Boolean);
     let best = 0;
     for (const t of texts) {
-      for (const w of wanted) {
-        if (t === w) best = Math.max(best, 3);
-        else if (t.startsWith(w)) best = Math.max(best, 2);
-        else if (t.includes(w) && t.length < w.length + 25) best = Math.max(best, 1);
-      }
+      wanted.forEach((w, i) => {
+        const rank = wanted.length - i; // priorité au plus spécifique
+        if (t === w) best = Math.max(best, 300 + rank);
+        else if (opts.exactOnly) return;
+        else if (t.startsWith(`${w} `) || t.startsWith(w + ":")) best = Math.max(best, 200 + rank);
+        else if (t.includes(w) && t.length < w.length + 25) best = Math.max(best, 100 + rank);
+      });
     }
     return best;
   };
@@ -106,8 +137,20 @@ export function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-export async function click(labels: string[], root?: ParentNode, timeoutMs?: number): Promise<HTMLElement> {
-  const el = await waitFor(() => findClickable(labels, root), timeoutMs);
+/** Élément situé dans une carte de notebook (à exclure des actions globales comme « Créer »). */
+export function isInsideNotebookCard(el: Element): boolean {
+  if (el.closest(SELECTORS.notebookLink) || el.matches(SELECTORS.notebookLink)) return true;
+  const card = el.closest(SELECTORS.notebookCard.slice(0, 2).join(","));
+  return !!card && UUID_ANY.test(card.outerHTML.slice(0, 4000));
+}
+
+export async function click(
+  labels: string[],
+  root?: ParentNode,
+  timeoutMs?: number,
+  opts?: Parameters<typeof findClickable>[2],
+): Promise<HTMLElement> {
+  const el = await waitFor(() => findClickable(labels, root, opts), timeoutMs);
   el.scrollIntoView({ block: "center" });
   el.click();
   await sleep(400);
@@ -155,7 +198,7 @@ export function scanNotebooks(): { id: string; title: string; card: HTMLElement 
   if (seen.size === 0) {
     // Fallback : cartes non-anchor portant l'ID dans un attribut
     document.querySelectorAll("[id], [data-id], [data-project-id], [aria-describedby]").forEach((el) => {
-      for (const at of Array.from(el.attributes)) if (/[0-9a-f-]{36}/i.test(at.value)) push(el, `/notebook/${/[0-9a-f-]{36}/i.exec(at.value)![0]}`);
+      for (const at of Array.from(el.attributes)) if (UUID_ANY.test(at.value)) push(el, `/notebook/${UUID_ANY.exec(at.value)![0]}`);
     });
   }
   return Array.from(seen.values());

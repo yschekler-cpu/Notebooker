@@ -1,6 +1,7 @@
 import { classify } from "../background/classify";
 import type { NotebookSummary } from "../shared/messages";
-import { getBriefingRuns, getSettings, getSubscriptions, saveSettings, saveSubscriptions, uid } from "../shared/storage";
+import { exportOrganization, importOrganization } from "../shared/org";
+import { getBriefingRuns, getFolders, getNotebookMetas, getSettings, getSubscriptions, saveSettings, uid } from "../shared/storage";
 import type { Settings, Subscription, SubscriptionKind, Target } from "../shared/types";
 
 const $ = <T extends HTMLElement = HTMLInputElement>(id: string) => document.getElementById(id) as T;
@@ -110,13 +111,13 @@ async function renderSubs(): Promise<void> {
     : `<tr><td colspan="6" class="hint">Aucun abonnement. Ajoute une page via le popup ou le clic droit.</td></tr>`;
   tb.querySelectorAll<HTMLButtonElement>("[data-del]").forEach((b) => {
     b.onclick = async () => {
-      await saveSubscriptions(subs.filter((s) => s.id !== b.dataset.del));
+      await send({ type: "subscriptionOp", op: "delete", id: b.dataset.del! });
       void renderSubs();
     };
   });
   tb.querySelectorAll<HTMLButtonElement>("[data-toggle]").forEach((b) => {
     b.onclick = async () => {
-      await saveSubscriptions(subs.map((s) => (s.id === b.dataset.toggle ? { ...s, enabled: !s.enabled } : s)));
+      await send({ type: "subscriptionOp", op: "toggle", id: b.dataset.toggle! });
       void renderSubs();
     };
   });
@@ -141,7 +142,7 @@ async function renderSubs(): Promise<void> {
       refreshMinutes: Math.max(15, Number($("s_freq").value) || 360),
       lastCheckedAt: null, lastFingerprint: null, seenItemIds: [], enabled: true, lastError: null,
     };
-    await saveSubscriptions([...(await getSubscriptions()), sub]);
+    await send({ type: "subscriptionOp", op: "add", sub });
     say("Abonnement ajouté — premier passage à la prochaine synchro (≤ 15 min).", "ok");
     void renderSubs();
   };
@@ -159,6 +160,12 @@ async function renderRuns(): Promise<void> {
         )
         .join("")
     : `<p class="hint">Aucun brief exécuté.</p>`;
+}
+
+async function renderOrgStats(): Promise<void> {
+  const [folders, metas] = await Promise.all([getFolders(), getNotebookMetas()]);
+  const list = Object.values(metas);
+  $("orgStats").textContent = `${folders.length} dossiers · ${list.filter((m) => m.folderId).length} notebooks classés · ${list.filter((m) => m.pinned).length} épinglés`;
 }
 
 function esc(s: string): string {
@@ -210,7 +217,29 @@ async function init(): Promise<void> {
     if (c.subscriptions) void renderSubs();
   });
 
-  await Promise.all([renderSubs(), renderRuns()]);
+  $("exportOrg").onclick = async () => {
+    const blob = new Blob([JSON.stringify(await exportOrganization(), null, 2)], { type: "application/json" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `notebooker-organisation-${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  };
+  $("importOrgBtn").onclick = () => $("importOrg").click();
+  $("importOrg").onchange = async () => {
+    const file = $("importOrg").files?.[0];
+    if (!file) return;
+    try {
+      const r = await importOrganization(JSON.parse(await file.text()));
+      say(`Import OK : ${r.folders} dossiers, ${r.notebooks} notebooks.`, "ok");
+      void renderOrgStats();
+    } catch (e) {
+      say(`Import refusé : ${e instanceof Error ? e.message : String(e)}`, "error");
+    }
+    $("importOrg").value = "";
+  };
+
+  await Promise.all([renderSubs(), renderRuns(), renderOrgStats()]);
 }
 
 void init();

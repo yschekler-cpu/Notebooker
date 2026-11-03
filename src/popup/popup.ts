@@ -1,3 +1,4 @@
+import { requiredOrigin } from "../background/classify";
 import type { NotebookSummary } from "../shared/messages";
 import { getBriefingRuns, getSettings } from "../shared/storage";
 import type { Target } from "../shared/types";
@@ -22,9 +23,9 @@ async function loadTargets(): Promise<void> {
       s.notion[k].briefingRootIds.map((db): Target => ({ kind: "notion_database", databaseId: db, workspace: k, label: `${s.notion[k].label} · ${db.slice(0, 8)}…` })),
     ),
   ];
-  const { lastTarget } = (await chrome.storage.local.get("lastTarget")) as { lastTarget?: number };
+  const { lastTargetKey } = (await chrome.storage.local.get("lastTargetKey")) as { lastTargetKey?: string };
   $<HTMLSelectElement>("target").innerHTML = targets.length
-    ? targets.map((t, i) => `<option value="${i}" ${i === lastTarget ? "selected" : ""}>${t.kind === "notebooklm" ? "📓" : "🗂️"} ${escapeHtml(t.label)}</option>`).join("")
+    ? targets.map((t, i) => `<option value="${i}" ${targetKey(t) === lastTargetKey ? "selected" : ""}>${t.kind === "notebooklm" ? "📓" : "🗂️"} ${escapeHtml(t.label)}</option>`).join("")
     : `<option disabled selected>Aucune cible — clique « Lister mes notebooks »</option>`;
 }
 
@@ -41,13 +42,13 @@ async function init(): Promise<void> {
     const target = targets[idx];
     if (!tab?.url || !target) return status("Choisis une cible.");
     const refreshMinutes = Number($<HTMLSelectElement>("refresh").value);
-    // La détection de changement d'une page web nécessite de la lire : permission hôte demandée ici (geste utilisateur).
-    if (refreshMinutes > 0 && /^https?:/.test(tab.url) && !/youtube\.com|youtu\.be|notion\.so/.test(tab.url)) {
-      const origin = new URL(tab.url).origin + "/*";
+    // Permission hôte = exactement l'origine que le service worker devra lire (geste utilisateur requis).
+    const origin = requiredOrigin(tab.url, refreshMinutes);
+    if (origin && !(await chrome.permissions.contains({ origins: [origin] }))) {
       const granted = await chrome.permissions.request({ origins: [origin] });
       if (!granted) return status("Permission refusée : impossible de suivre les mises à jour de ce site.");
     }
-    await chrome.storage.local.set({ lastTarget: idx });
+    await chrome.storage.local.set({ lastTargetKey: targetKey(target) });
     await send({ type: "addCurrentPage", url: tab.url, title: tab.title ?? tab.url, target, refreshMinutes });
     status("Ajout en cours… (notification à la fin)");
   };
@@ -64,8 +65,10 @@ async function init(): Promise<void> {
   };
 
   $("brief").onclick = async () => {
-    status("Brief en cours (2-5 min)… tu peux fermer ce popup.");
-    void send({ type: "runBriefingNow" }).catch((e: unknown) => status(String(e)));
+    status("Brief en cours (2-5 min)… tu peux fermer ce popup, une notification suivra.");
+    void send<{ skipped?: string; status?: string }>({ type: "runBriefingNow" })
+      .then((r) => status(r.skipped ?? `Brief terminé : ${r.status ?? "?"}`))
+      .catch((e: unknown) => status(String(e instanceof Error ? e.message : e)));
   };
 
   $("sync").onclick = async () => {
@@ -77,6 +80,11 @@ async function init(): Promise<void> {
       status(String(e instanceof Error ? e.message : e));
     }
   };
+}
+
+/** Clé stable d'une cible (l'index change quand l'ordre des notebooks change). */
+function targetKey(t: Target): string {
+  return t.kind === "notebooklm" ? `nb:${t.notebookId}` : `notion:${t.workspace}:${t.databaseId}`;
 }
 
 function escapeHtml(s: string): string {

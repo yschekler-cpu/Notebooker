@@ -4,7 +4,7 @@ import { getBriefingRuns, getSettings, saveBriefingRun, uid } from "../shared/st
 import type { BriefingRun, NotionWorkspaceKey, Settings, SourcePayload } from "../shared/types";
 import { synthesizeBriefing } from "./claude";
 import { buildGmailQuery, fetchRecentMails, type MailDigestItem } from "./gmail";
-import { createNotebookWithAudio, deleteNotebook } from "./notebooklm";
+import { createNotebookWithAudio, deleteNotebook, keepAlive, notebookUrl } from "./notebooklm";
 import { NotionClient, type NotionPageLite } from "./notion";
 import { clamp } from "./text";
 
@@ -23,8 +23,61 @@ export interface NotionDigestItem extends NotionPageLite {
 }
 
 const MAX_SOURCE_CHARS = 180_000;
+/** Plafond du corpus envoyé à Claude (~100k tokens) : borne le coût et la latence. */
+const MAX_CLAUDE_CORPUS_CHARS = 400_000;
+const LOCK_KEY = "briefingLock";
+const LOCK_TTL_MS = 25 * 60_000;
 
-export async function runBriefing(opts: { interactive: boolean }): Promise<BriefingRun> {
+/**
+ * Verrou persistant (storage) : alarme, rattrapage au démarrage et bouton manuel ne doivent
+ * jamais produire deux notebooks le même matin. TTL pour survivre à un SW tué en plein run.
+ */
+async function acquireLock(): Promise<boolean> {
+  const { [LOCK_KEY]: lock } = (await chrome.storage.local.get(LOCK_KEY)) as { [LOCK_KEY]?: number };
+  if (lock && Date.now() - lock < LOCK_TTL_MS) return false;
+  await chrome.storage.local.set({ [LOCK_KEY]: Date.now() });
+  return true;
+}
+
+async function releaseLock(): Promise<void> {
+  await chrome.storage.local.remove(LOCK_KEY);
+}
+
+/** Runs restés « running » après un arrêt brutal du service worker → marqués en erreur. */
+async function closeStaleRuns(): Promise<void> {
+  for (const r of await getBriefingRuns()) {
+    if (r.status === "running" && Date.now() - new Date(r.startedAt).getTime() > LOCK_TTL_MS) {
+      await saveBriefingRun({ ...r, status: "error", finishedAt: new Date().toISOString(), steps: [...r.steps, { at: new Date().toISOString(), message: "Interrompu (service worker arrêté)", level: "error" }] });
+    }
+  }
+}
+
+let inflight: Promise<BriefingRun | { skipped: string }> | null = null;
+
+/**
+ * Point d'entrée unique. Deux protections complémentaires :
+ * - `inflight` (mémoire) : synchrone, couvre le double-clic (le get/set du storage n'est pas atomique) ;
+ * - verrou storage : couvre un SW redémarré pendant un run.
+ */
+export function runBriefing(opts: { interactive: boolean }): Promise<BriefingRun | { skipped: string }> {
+  if (inflight) return Promise.resolve({ skipped: "Un brief est déjà en cours." });
+  inflight = (async () => {
+    await closeStaleRuns();
+    if (!(await acquireLock())) return { skipped: "Un brief est déjà en cours." };
+    const stop = keepAlive();
+    try {
+      return await doRunBriefing(opts);
+    } finally {
+      stop();
+      await releaseLock();
+    }
+  })().finally(() => {
+    inflight = null;
+  });
+  return inflight;
+}
+
+async function doRunBriefing(opts: { interactive: boolean }): Promise<BriefingRun> {
   const settings = await getSettings();
   const run: BriefingRun = {
     id: uid(),
@@ -84,13 +137,21 @@ export async function runBriefing(opts: { interactive: boolean }): Promise<Brief
 
     // 3) NotebookLM
     const title = settings.briefing.notebookTitleTemplate.replace("{date}", formatDateFR());
-    const { notebookId, added } = await createNotebookWithAudio(title, sources, settings.briefing.audioInstructions, log);
+    const { notebookId, added, audioStarted } = await createNotebookWithAudio(title, sources, settings.briefing.audioInstructions, log, async (id) => {
+      // Tracé dès la création : rétention + anti-doublon même si la suite échoue.
+      run.notebookId = id;
+      await saveBriefingRun(run);
+      await trackBriefNotebook(id);
+    });
     run.notebookId = notebookId;
     run.sourcesCount = added;
     if (added < sources.length) degraded = true;
 
-    await trackBriefNotebook(notebookId);
-    await chrome.alarms.create(`audio:${notebookId}`, { delayInMinutes: 4, periodInMinutes: 3 });
+    if (audioStarted) await chrome.alarms.create(`audio:${notebookId}`, { delayInMinutes: 4, periodInMinutes: 3 });
+    else {
+      degraded = true;
+      notify("Brief du matin prêt (sans audio)", "Le notebook est créé ; lance l'Audio Overview manuellement.", await notebookUrl(notebookId));
+    }
     await applyRetention(settings, log);
 
     return finish(run, degraded ? "partial" : "success");
@@ -143,7 +204,7 @@ export async function buildSources(
 
   if (settings.claude.enabled) {
     try {
-      const corpus = `# Corpus du ${date}\n\n## EMAILS\n\n${mailsMd}\n\n## NOTION ${settings.notion.personal.label.toUpperCase()}\n\n${byWs("personal")}\n\n## NOTION ${settings.notion.company.label.toUpperCase()}\n\n${byWs("company")}`;
+      const corpus = clamp(`# Corpus du ${date}\n\n## EMAILS\n\n${mailsMd}\n\n## NOTION ${settings.notion.personal.label.toUpperCase()}\n\n${byWs("personal")}\n\n## NOTION ${settings.notion.company.label.toUpperCase()}\n\n${byWs("company")}`, MAX_CLAUDE_CORPUS_CHARS);
       const brief = await synthesizeBriefing(settings.claude, corpus);
       sources.push({ type: "text", title: `Brief synthétisé — ${date}`, text: brief });
       log("Synthèse Claude générée");
@@ -230,7 +291,8 @@ async function finish(run: BriefingRun, status: BriefingRun["status"]): Promise<
 }
 
 export async function lastSuccessfulRun(): Promise<Date | null> {
-  const r = (await getBriefingRuns()).find((x) => x.status === "success" || x.status === "partial");
+  // Un run en erreur qui a quand même créé un notebook compte : pas de second brief le même matin.
+  const r = (await getBriefingRuns()).find((x) => x.status === "success" || x.status === "partial" || x.notebookId !== null);
   return r ? new Date(r.startedAt) : null;
 }
 
