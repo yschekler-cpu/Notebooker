@@ -64,9 +64,17 @@ async function init(): Promise<void> {
     }
   };
 
+  const settings = await getSettings();
+  $<HTMLSelectElement>("briefProfile").innerHTML = settings.profiles
+    .map((p) => `<option value="${escapeHtml(p.id)}">${p.enabled ? "●" : "○"} ${escapeHtml(p.name)}</option>`)
+    .join("");
+  const { actionItems = [] } = (await chrome.storage.local.get("actionItems")) as { actionItems?: { status: string }[] };
+  const pendingActions = actionItems.filter((a) => a.status === "pending").length;
+  if (pendingActions) status(`✅ ${pendingActions} action(s) à valider dans les réglages.`);
+
   $("brief").onclick = async () => {
     status("Brief en cours (2-5 min)… tu peux fermer ce popup, une notification suivra.");
-    void send<{ skipped?: string; status?: string }>({ type: "runBriefingNow" })
+    void send<{ skipped?: string; status?: string }>({ type: "runBriefingNow", profileId: $<HTMLSelectElement>("briefProfile").value })
       .then((r) => status(r.skipped ?? `Brief terminé : ${r.status ?? "?"}`))
       .catch((e: unknown) => status(String(e instanceof Error ? e.message : e)));
   };

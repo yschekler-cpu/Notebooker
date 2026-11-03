@@ -1,5 +1,5 @@
 import type { DriverCommand, DriverResponse } from "../../shared/messages";
-import type { SourcePayload } from "../../shared/types";
+import type { AudioOptions, SourcePayload } from "../../shared/types";
 import {
   LABELS,
   SELECTORS,
@@ -35,8 +35,7 @@ export async function handleCommand(c: DriverCommand): Promise<DriverResponse> {
         await addSource(c.source);
         return ok(true);
       case "generateAudio":
-        await generateAudio(c.instructions);
-        return ok(true);
+        return ok(await generateAudio(c.audio));
       case "audioStatus":
         return ok(audioStatus());
       case "deleteNotebook":
@@ -132,22 +131,92 @@ function audioCard(): HTMLElement | null {
   return null;
 }
 
-async function generateAudio(instructions: string): Promise<void> {
+/** Noms affichés des langues (sélecteur NotebookLM en FR ou EN). */
+export const LANGUAGE_NAMES: Record<string, string[]> = {
+  fr: ["français", "french", "francais"],
+  en: ["english", "anglais"],
+  it: ["italiano", "italien", "italian"],
+  de: ["deutsch", "allemand", "german"],
+  es: ["español", "espagnol", "spanish"],
+  nl: ["nederlands", "néerlandais", "dutch"],
+};
+
+export interface AudioReport {
+  applied: string[];
+  missing: string[];
+}
+
+/** Sélectionne une langue dans un <select> natif ou un mat-select (best-effort). */
+async function chooseLanguage(dlg: HTMLElement, code: string): Promise<boolean> {
+  const names = (LANGUAGE_NAMES[code] ?? [code]).map(norm);
+  const native = Array.from(dlg.querySelectorAll<HTMLSelectElement>("select")).find((sel) =>
+    LABELS.languageControl.some((l) => norm(sel.getAttribute("aria-label") ?? sel.name ?? "").includes(norm(l))) || dlg.querySelectorAll("select").length === 1,
+  );
+  if (native) {
+    const opt = Array.from(native.options).find((o) => names.some((n) => norm(o.textContent).startsWith(n)) || norm(o.value) === norm(code));
+    if (!opt) return false;
+    native.value = opt.value;
+    native.dispatchEvent(new Event("change", { bubbles: true }));
+    return true;
+  }
+  const trigger = findClickable(LABELS.languageControl, dlg) ?? dlg.querySelector<HTMLElement>("mat-select, [role='combobox']");
+  if (!trigger) return false;
+  trigger.click();
+  await sleep(400);
+  const option = Array.from(document.querySelectorAll<HTMLElement>("[role='option'], mat-option")).find((o) => names.some((n) => labelText(o).startsWith(n)));
+  if (!option) {
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    return false;
+  }
+  option.click();
+  await sleep(300);
+  return true;
+}
+
+async function generateAudio(audio: AudioOptions): Promise<AudioReport> {
+  const report: AudioReport = { applied: [], missing: [] };
   const card = await waitFor(() => audioCard(), 20_000).catch(() => {
     throw new Error("Carte « Audio Overview » introuvable dans le panneau Studio.");
   });
-  // 1) « Personnaliser » → consignes → « Générer »
   const customize = findClickable(LABELS.audioCustomize, card);
-  if (customize) {
-    customize.click();
-    const dlg = await waitFor(() => topDialog(), 8000);
-    const field = visibleTextField(dlg);
-    if (field && instructions) fill(field, instructions);
-    await click(LABELS.audioGenerate, dlg);
-    return;
+  if (!customize) {
+    // Fallback : « Générer » direct, sans personnalisation
+    await click(LABELS.audioGenerate, card);
+    report.missing.push("personnalisation (bouton « Personnaliser » absent)");
+    return report;
   }
-  // 2) Fallback : « Générer » direct (sans consignes)
-  await click(LABELS.audioGenerate, card);
+  customize.click();
+  const dlg = await waitFor(() => topDialog(), 8000);
+
+  // Chaque réglage est indépendant : un libellé introuvable n'empêche pas la génération.
+  const format = findClickable(LABELS.audioFormat[audio.format], dlg, { exactOnly: true }) ?? findClickable(LABELS.audioFormat[audio.format], dlg);
+  if (format) {
+    format.click();
+    report.applied.push(`format ${audio.format}`);
+    await sleep(200);
+  } else report.missing.push(`format ${audio.format}`);
+
+  const length = findClickable(LABELS.audioLength[audio.length], dlg, { exactOnly: true });
+  if (length) {
+    length.click();
+    report.applied.push(`durée ${audio.length}`);
+    await sleep(200);
+  } else if (audio.length !== "default") report.missing.push(`durée ${audio.length}`);
+
+  const langOk = await chooseLanguage(dlg, audio.language).catch(() => false);
+  if (langOk) report.applied.push(`langue ${audio.language}`);
+  else report.missing.push(`langue ${audio.language} (consigne textuelle utilisée)`);
+
+  const langName = LANGUAGE_NAMES[audio.language]?.[0] ?? audio.language;
+  const text = [langOk ? "" : `Langue de l'épisode : ${langName}.`, audio.instructions].filter(Boolean).join(" ");
+  const field = Array.from(dlg.querySelectorAll<HTMLTextAreaElement>("textarea")).find((t) => t.offsetParent !== null) ?? visibleTextField(dlg);
+  if (field && text) {
+    fill(field, text);
+    report.applied.push("consignes");
+  } else if (text) report.missing.push("champ de consignes");
+
+  await click(LABELS.audioGenerate, dlg);
+  return report;
 }
 
 export function audioStatus(): "ready" | "generating" | "none" {

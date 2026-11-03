@@ -1,4 +1,5 @@
 import { GMAIL_API } from "../shared/endpoints";
+import { getGoogleToken, googleGet } from "./google";
 import { htmlToText } from "./text";
 
 /**
@@ -19,39 +20,8 @@ export interface MailDigestItem {
   labels: string[];
 }
 
-/** Gmail n'est utilisable que si un vrai OAuth client ID a été renseigné dans le manifest. */
-export function gmailConfigured(): boolean {
-  const id = chrome.runtime.getManifest().oauth2?.client_id ?? "";
-  return /\.apps\.googleusercontent\.com$/.test(id) && !id.startsWith("REPLACE");
-}
-
-export async function getGoogleToken(interactive: boolean): Promise<string> {
-  if (!gmailConfigured()) {
-    throw new Error("Gmail non configuré : renseigner oauth2.client_id dans manifest.json (voir README).");
-  }
-  // getAuthToken peut ne jamais rendre la main (fenêtre de consentement ignorée, client ID invalide) :
-  // borne explicite pour ne pas bloquer le brief.
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error("Autorisation Google sans réponse (délai dépassé).")), interactive ? 120_000 : 20_000);
-  });
-  try {
-    const r = await Promise.race([chrome.identity.getAuthToken({ interactive }), timeout]);
-    if (!r?.token) throw new Error("Pas de token Google (autorisation Gmail refusée).");
-    return r.token;
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
 async function gmail<T>(token: string, path: string): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(30_000) });
-  if (res.status === 401) {
-    await chrome.identity.removeCachedAuthToken({ token });
-    throw new Error("Token Google expiré — relancer (il sera renouvelé).");
-  }
-  if (!res.ok) throw new Error(`Gmail ${res.status}: ${(await res.text()).slice(0, 300)}`);
-  return (await res.json()) as T;
+  return googleGet<T>(token, `${BASE}${path}`, "Gmail");
 }
 
 /** Construit la requête Gmail : base + fenêtre temporelle + exclusions (expéditeurs, domaines, labels). */

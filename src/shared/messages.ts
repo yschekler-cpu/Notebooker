@@ -7,7 +7,7 @@ export type DriverCommand =
   | { cmd: "createNotebook"; title: string; knownIds: string[] }
   | { cmd: "renameNotebook"; title: string }
   | { cmd: "addSource"; source: SourcePayload }
-  | { cmd: "generateAudio"; instructions: string }
+  | { cmd: "generateAudio"; audio: import("./types").AudioOptions }
   | { cmd: "audioStatus" }
   | { cmd: "deleteNotebook"; notebookId: string };
 
@@ -16,7 +16,7 @@ export type DriverResponse<T = unknown> = { ok: true; data: T } | { ok: false; e
 /** Messages popup/options/content → service worker. */
 export type BackgroundRequest =
   | { type: "addCurrentPage"; url: string; title: string; target: Target; refreshMinutes: number }
-  | { type: "runBriefingNow" }
+  | { type: "runBriefingNow"; profileId?: string }
   | { type: "refreshSubscriptionsNow" }
   | { type: "listNotebooks" }
   | { type: "notebooksSeen"; notebooks: { id: string; title: string }[] }
@@ -24,6 +24,11 @@ export type BackgroundRequest =
   | { type: "testNotion"; workspace: "personal" | "company" }
   | { type: "testGmail" }
   | { type: "testClaude" }
+  | { type: "testCalendar" }
+  | { type: "inspectBacklog" }
+  /** Actions : envoi au backlog (avec corrections éventuelles) ou rejet. */
+  | { type: "actionsOp"; op: "push"; ids: string[]; edits?: Record<string, { title?: string; due?: string; priority?: "haute" | "moyenne" | "basse" }> }
+  | { type: "actionsOp"; op: "dismiss"; ids: string[] }
   /** Toute écriture d'abonnement depuis l'UI passe par le SW (mutex unique, pas d'écrasement). */
   | { type: "subscriptionOp"; op: "delete" | "toggle"; id: string }
   | { type: "subscriptionOp"; op: "add"; sub: import("./types").Subscription };

@@ -6,7 +6,10 @@ Extension Chrome (Manifest V3) pour NotebookLM :
 |---|---|
 | **Organiseur** | Dossiers, tags, épingles et recherche sur la page d'accueil NotebookLM. Stocké en `chrome.storage.sync` (rien n'est écrit chez Google). |
 | **Sources auto-synchronisées** | Ajout d'une page web, vidéo YouTube, flux RSS, chaîne YouTube, page ou base Notion vers un **notebook NotebookLM** ou une **base Notion**, avec une fréquence de rafraîchissement (unique / 1 h / 6 h / quotidien / hebdo). |
-| **Brief quotidien (podcast)** | Tous les matins à heure fixe : scan Gmail + Notion perso + Notion entreprise → (option) synthèse Claude → création d'un notebook « ☀️ Brief du … » → lancement de l'**Audio Overview** → notification quand le podcast est prêt. |
+| **Briefs podcast (profils)** | Plusieurs profils planifiés (jours + heure) : brief du matin, récap conformité du vendredi, digest Comex… Chacun choisit ses sources (Gmail, **Agenda**, Notion perso/entreprise), son angle de synthèse et son **format audio** (format, durée, langue, consignes). Résultat : un notebook « ☀️ Brief du … » + **Audio Overview** + notification. |
+| **Préparation des réunions** | Réunions du jour (Google Agenda, lecture seule) avec, pour chacune, les emails et pages Notion à relire (participants + mots-clés). |
+| **Mémoire du brief** | Chaque sujet (fil Gmail, page Notion) est étiqueté 🆕 nouveau / 🔁 toujours actif depuis N jours / 💤 calmé, par rapport au brief précédent. |
+| **Actions → backlog Notion** | Claude extrait les actions qui te sont adressées ; elles attendent ta **validation** (titre, échéance, priorité modifiables) avant création dans ta base backlog, avec mapping automatique des propriétés. |
 
 ---
 
@@ -53,7 +56,7 @@ npm install
 npm run build        # → dist/
 npm run typecheck
 npm test             # tests unitaires (vitest)
-npm run e2e          # tests E2E : extension réelle dans Chromium + faux NotebookLM (après build)
+npm run e2e          # build E2E (dist-e2e/) + tests : extension réelle dans Chromium, faux NotebookLM, mocks Google/Notion/Anthropic
 ```
 
 Les tests E2E nécessitent Playwright (`npx playwright install chromium` en local). Ils chargent l'extension dans Chromium, servent un **faux NotebookLM** (`tests/e2e/mock-notebooklm.html` : icônes Material dans les boutons, cartes sans lien, overlays CDK, boutons désactivés, libellés leurres) et interceptent les API Notion et Anthropic pour vérifier les requêtes réellement émises.
@@ -65,10 +68,12 @@ Chrome → `chrome://extensions` → **Mode développeur** → **Charger l'exten
 | Étape | Où | Détail |
 |---|---|---|
 | 1. NotebookLM | Navigateur | Être connecté à notebooklm.google.com avec le compte voulu. Si plusieurs comptes Google : régler l'**index de compte** (`/u/N/`) dans les options. Ouvrir NotebookLM une fois → les notebooks sont listés comme cibles. |
-| 2. Gmail | Google Cloud Console | Créer un **OAuth client ID** de type *Chrome Extension* avec l'ID de l'extension (visible dans `chrome://extensions`), activer la **Gmail API**, puis remplacer `oauth2.client_id` dans `static/manifest.json`. Scope demandé : `gmail.readonly` uniquement. Pour figer l'ID de l'extension entre postes, ajouter une clé `key` au manifest. |
+| 2. Gmail + Agenda | Google Cloud Console | Créer un **OAuth client ID** de type *Chrome Extension* avec l'ID de l'extension (visible dans `chrome://extensions`), activer la **Gmail API** et la **Google Calendar API**, puis remplacer `oauth2.client_id` dans `static/manifest.json`. Scopes : `gmail.readonly` + `calendar.readonly` (un seul consentement). Pour figer l'ID de l'extension entre postes, ajouter une clé `key` au manifest. |
 | 3. Notion | notion.so/profile/integrations | Créer **une intégration interne par workspace** (perso, entreprise). Partager **uniquement** les pages/bases nécessaires avec chaque intégration. Coller les tokens dans les options. |
 | 4. Claude (optionnel) | Options | Mode **Jeton OAuth** : `ant auth login` puis `ant auth print-credentials --access-token`. Mode **Clé API** : clé Console. Modèle par défaut `claude-opus-5-5`, fallbacks serveur activés (désactivés automatiquement si l'API les refuse). Corpus plafonné à ~100k tokens. |
-| 5. Brief | Options | Activer, régler l'heure, la fenêtre, la requête Gmail, les **exclusions** et les consignes de l'Audio Overview. **Enregistrer** → la prochaine exécution s'affiche. |
+| 5. Profils de brief | Options › Profils | Partir d'un modèle (brief du matin, récap conformité, digest Comex), régler jours/heure, sources, format audio, angle de synthèse, mémoire, extraction d'actions. **Enregistrer** → la prochaine exécution de chaque profil s'affiche. |
+| 6. Conformité | Options › Conformité | **Exclusions Gmail communes à tous les profils** (non contournables par profil). |
+| 7. Backlog (optionnel) | Options › Backlog Notion | ID/URL de la base + statut d'import. **Vérifier la base** affiche le mapping détecté (titre, échéance, priorité, statut, source). L'intégration Notion doit avoir accès à la base. |
 
 ---
 
@@ -80,7 +85,8 @@ Chrome → `chrome://extensions` → **Mode développeur** → **Charger l'exten
 | Sauvegarder l'organisation | Options → *Organisation* → Exporter / Importer (JSON, sans token ni contenu). |
 | Ajouter la page courante | Popup → cible + fréquence → **Ajouter cette page**. Ou clic droit → *Notebooker : ajouter à…* |
 | Suivre un flux / une chaîne YouTube | Options → *Ajouter un abonnement* (URL de chaîne `youtube.com/channel/UC…`, playlist, `…/feed`, page ou base Notion). |
-| Brief manuel | Popup → **☀️ Brief maintenant** (premier lancement : autorisation Gmail interactive). |
+| Brief manuel | Popup → choisir le profil → **☀️ Brief maintenant** (premier lancement : consentement Google interactif). Ou Options › Profils › **Lancer ce profil maintenant**. |
+| Valider les actions | Notification « N actions à valider » → Options › **Actions à valider** : corriger, cocher, **Envoyer au backlog** ou **Ignorer**. Une action déjà traitée n'est pas re-proposée pendant 14 jours. |
 | Diagnostiquer | Options → **Historique des briefs** (log horodaté par étape) + colonne erreur des abonnements. |
 
 ### Comportement de rafraîchissement
@@ -97,6 +103,22 @@ Chrome → `chrome://extensions` → **Mode développeur** → **Charger l'exten
 
 ---
 
+### Mise à jour depuis la v0.1
+
+Les réglages existants sont migrés automatiquement au premier chargement : l'ancien brief devient le profil « Brief du matin » (heure, jours, fenêtre, consignes audio, rétention conservés) et ses exclusions Gmail deviennent les **exclusions de conformité** communes. Après la mise à jour, Chrome redemande le consentement Google pour ajouter le scope Agenda.
+
+## Pipeline d'un profil de brief
+
+| Étape | Détail | En cas d'échec |
+|---|---|---|
+| 1. Collecte | Gmail (requête du profil + exclusions de conformité), Agenda (de maintenant à la fin de journée ; brief ≥ 17 h → lendemain), Notion perso/entreprise | Source ignorée, run « partial », cause dans l'historique |
+| 2. Mémoire | Sujets observés comparés au dernier brief du profil (re-run le même jour sans double comptage, purge à 14 j) | — |
+| 3. Masquage | PII masquées avant NotebookLM et Claude | — |
+| 4. Claude (option) | Synthèse + extraction d'actions sur **le même corpus mis en cache** (la 2ᵉ requête relit le cache, ≈ 5 % du prix d'entrée) ; extraction en JSON Schema validé | Chaque tâche est indépendante ; le brief continue sans |
+| 5. Actions | File « à valider » — **aucune écriture Notion sans validation** | — |
+| 6. NotebookLM | Notebook + sources (Synthèse, Agenda, Suivi, Emails, Notion) + Audio Overview au format du profil | Réglage audio introuvable → signalé, génération quand même |
+| 7. Rétention | Suppression des notebooks **de ce profil** au-delà de N jours | Conservé + warning |
+
 ## Conformité & sécurité des données
 
 | Sujet | Mesure |
@@ -108,6 +130,11 @@ Chrome → `chrome://extensions` → **Mode développeur** → **Charger l'exten
 | **Périmètre NotebookLM** | ⚠️ Utiliser le **compte Google Workspace Opale**, pas un compte perso : le contenu des emails pro ne doit pas quitter le tenant de l'entreprise. À valider avec le RSSI / DPO. |
 | **LLM tiers** | Claude OFF par défaut ; en ON, à inscrire au registre des traitements (sous-traitant, finalité, durée). |
 | **Rétention** | Suppression automatique des notebooks de brief après N jours (uniquement ceux créés par l'extension). |
+| **Agenda** | Lecture seule. Événements privés réduits à « Événement privé » (option par défaut). Liens de visio retirés. Réunions refusées ignorées. |
+| **Actions** | Validation humaine obligatoire avant toute écriture dans le backlog ; options de select/statut jamais inventées. |
+| **Mémoire** | Titres de sujets (masqués si le masquage est actif) conservés localement 14 jours, en `storage.local` (inaccessible aux pages web). |
+| **Profil Comex** | Modèle sans Gmail et avec consigne « pas de donnée nominative » — à valider avec la Conformité avant diffusion. |
+| **Onglet d'options obsolète** | Un onglet resté ouvert ne réécrit jamais silencieusement des réglages modifiés ailleurs (rechargement auto ou avertissement). |
 | **Isolation des secrets** | `storage.local` (tokens) en accès `TRUSTED_CONTEXTS` : illisible depuis le content script injecté dans NotebookLM. Le routeur de messages n'accepte d'une page web que la liste des notebooks visibles (payload validé). |
 | **Création de notebook** | Le driver refuse tout ID de notebook déjà existant après le clic « Créer » (protection contre l'ouverture accidentelle d'un notebook existant, qui serait sinon rempli puis supprimé par la rétention). |
 | **Suppression de données** | L'extension ne supprime **jamais** un notebook qu'elle n'a pas créé ; avant suppression, la carte ciblée doit référencer un seul notebook et la boîte de confirmation doit correspondre, sinon abandon. |
@@ -128,7 +155,11 @@ Chrome → `chrome://extensions` → **Mode développeur** → **Charger l'exten
 
 - [ ] Driver **NotebookLM Enterprise** (API Discovery Engine) en alternative au driver UI
 - [ ] Suppression de l'ancienne version d'une source lors d'un rafraîchissement
-- [ ] Sources Google Calendar (réunions du jour) et Slack dans le brief
+- [x] Google Agenda (réunions du jour + préparation) dans le brief
+- [x] Profils de brief (planning, sources, angle, format audio) · mémoire · actions → backlog Notion
+- [ ] « Google Doc vivant » par abonnement (une source unique synchronisée nativement par NotebookLM)
+- [ ] Auto-test quotidien du driver · pré-contrôle des quotas NotebookLM
+- [ ] Slack dans le brief
 - [x] Drag & drop des cartes vers les dossiers
 - [x] Export / import de l'organisation (JSON)
 

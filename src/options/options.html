@@ -11,24 +11,101 @@
   <h1>📚 Notebooker</h1>
   <p class="sub">Organisation NotebookLM · sources auto-synchronisées · podcast de brief quotidien</p>
 
+  <section class="card" id="actions">
+    <h2>✅ Actions à valider <span class="badge" id="actionsCount"></span></h2>
+    <p class="hint">Extraites des briefs par Claude. Rien n'est écrit dans le backlog Notion sans ta validation — corrige le titre, l'échéance ou la priorité si besoin.</p>
+    <div id="actionsList"></div>
+    <div class="actions">
+      <button class="primary" id="actionsPush">Envoyer la sélection au backlog</button>
+      <button id="actionsDismiss">Ignorer la sélection</button>
+    </div>
+    <details style="margin-top:10px"><summary>Historique (envoyées / ignorées)</summary><div id="actionsHistory"></div></details>
+  </section>
+
   <section class="card">
-    <h2>☀️ Brief quotidien</h2>
-    <label class="inline"><input type="checkbox" id="b_enabled" /> Activer le brief automatique</label>
-    <div class="grid">
-      <div><label>Heure</label><input type="time" id="b_time" /></div>
-      <div><label>Fenêtre (heures)</label><input type="number" id="b_lookback" min="1" max="168" /></div>
-      <div><label>Rétention des notebooks de brief (jours, 0 = garder)</label><input type="number" id="b_retention" min="0" max="90" /></div>
+    <h2>☀️ Profils de brief</h2>
+    <div class="toolbar">
+      <select id="p_select" aria-label="Profil"></select>
+      <select id="p_template" aria-label="Modèle du nouveau profil">
+        <option value="daily">Modèle : brief du matin</option>
+        <option value="weeklyCompliance">Modèle : récap conformité (vendredi)</option>
+        <option value="comex">Modèle : digest Comex (lundi)</option>
+      </select>
+      <button id="p_new">+ Nouveau</button>
+      <button id="p_dup">Dupliquer</button>
+      <button id="p_del">Supprimer</button>
     </div>
-    <label class="inline"><input type="checkbox" id="b_weekdays" /> Jours ouvrés uniquement</label>
-    <label>Titre du notebook (<code>{date}</code> remplacé)</label><input type="text" id="b_title" />
-    <label>Consignes Audio Overview</label><textarea id="b_audio"></textarea>
     <div class="grid">
-      <div><label>Requête Gmail</label><input type="text" id="b_query" /><div class="hint">Syntaxe Gmail. <code>newer_than</code> est ajouté automatiquement.</div></div>
-      <div><label>Nb max d'emails</label><input type="number" id="b_max" min="1" max="200" /></div>
+      <div><label>Nom</label><input type="text" id="p_name" maxlength="60" /></div>
+      <div><label>Heure</label><input type="time" id="p_time" /></div>
+      <div><label>Fenêtre de collecte (heures)</label><input type="number" id="p_lookback" min="1" max="336" /></div>
+      <div><label>Rétention des notebooks (jours, 0 = garder)</label><input type="number" id="p_retention" min="0" max="365" /></div>
     </div>
-    <label>Exclusions Gmail (une par ligne : expéditeur, domaine ou <code>label:xxx</code>)</label>
-    <textarea id="b_exclusions" placeholder="notifications@dotfile.com&#10;label:kyc&#10;label:confidentiel"></textarea>
-    <div class="alert">Le brief requiert que Chrome soit ouvert à l'heure prévue. Sinon, il est rattrapé au démarrage de Chrome (jusqu'à midi).</div>
+    <label class="inline"><input type="checkbox" id="p_enabled" /> Profil actif (exécution automatique)</label>
+    <label>Jours</label>
+    <div class="days" id="p_days"></div>
+    <p class="hint" id="p_next"></p>
+
+    <h3>Sources</h3>
+    <div class="checks">
+      <label class="inline"><input type="checkbox" id="p_src_gmail" /> Gmail</label>
+      <label class="inline"><input type="checkbox" id="p_src_calendar" /> Agenda (réunions + préparation)</label>
+      <label class="inline"><input type="checkbox" id="p_src_np" /> Notion perso</label>
+      <label class="inline"><input type="checkbox" id="p_src_nc" /> Notion entreprise</label>
+    </div>
+    <div class="grid">
+      <div><label>Requête Gmail</label><input type="text" id="p_query" /><div class="hint">Syntaxe Gmail. <code>newer_than</code> et les exclusions de conformité sont ajoutés automatiquement.</div></div>
+      <div><label>Nb max d'emails</label><input type="number" id="p_max" min="1" max="200" /></div>
+    </div>
+
+    <h3>Notebook & podcast</h3>
+    <label>Titre du notebook (<code>{date}</code> remplacé)</label><input type="text" id="p_title" />
+    <div class="grid">
+      <div><label>Format</label><select id="p_format">
+        <option value="deep_dive">Analyse approfondie</option><option value="brief">Résumé court</option>
+        <option value="critique">Critique</option><option value="debate">Débat</option></select></div>
+      <div><label>Durée</label><select id="p_length"><option value="short">Courte</option><option value="default">Standard</option><option value="long">Longue</option></select></div>
+      <div><label>Langue</label><select id="p_lang">
+        <option value="fr">Français</option><option value="en">English</option><option value="it">Italiano</option>
+        <option value="de">Deutsch</option><option value="es">Español</option><option value="nl">Nederlands</option></select></div>
+    </div>
+    <label>Consignes pour les animateurs</label><textarea id="p_audio"></textarea>
+
+    <h3>Intelligence</h3>
+    <label>Angle de la synthèse Claude (optionnel)</label>
+    <textarea id="p_focus" placeholder="Ex. : angle Comex — décisions, risques, KPI ; pas de donnée nominative."></textarea>
+    <label class="inline"><input type="checkbox" id="p_memory" /> Mémoire : signaler les sujets nouveaux / toujours actifs / calmés depuis le dernier brief</label>
+    <label class="inline"><input type="checkbox" id="p_actions" /> Extraire les actions qui me sont adressées → file de validation → backlog Notion <span class="hint">(requiert Claude)</span></label>
+    <div class="actions"><button id="p_run">Lancer ce profil maintenant</button></div>
+    <div class="alert">Chrome doit être ouvert à l'heure prévue. Sinon le brief est rattrapé au démarrage de Chrome (jusqu'à midi, ou 4 h après un créneau d'après-midi).</div>
+  </section>
+
+  <section class="card">
+    <h2>🛡️ Conformité (tous profils)</h2>
+    <label>Exclusions Gmail (une par ligne : expéditeur, domaine, <code>label:xxx</code>, <code>subject:"…"</code>)</label>
+    <textarea id="x_exclusions" placeholder="notifications@dotfile.com&#10;label:kyc&#10;label:confidentiel"></textarea>
+    <div class="hint">Appliquées à TOUS les profils, sans exception possible profil par profil — ex. pour que les dossiers KYC/KYD ne transitent jamais par un notebook ou un LLM.</div>
+  </section>
+
+  <section class="card">
+    <h2>📅 Agenda</h2>
+    <label>Agendas lus (un ID par ligne, <code>primary</code> = agenda principal)</label>
+    <textarea id="k_ids"></textarea>
+    <label class="inline"><input type="checkbox" id="k_private" /> Événements privés : ne garder que « Événement privé » (ni titre, ni description, ni participants)</label>
+    <label class="inline"><input type="checkbox" id="k_declined" /> Ignorer les réunions refusées</label>
+    <div class="hint">Lecture seule (scope <code>calendar.readonly</code>). Les liens de visio sont retirés des descriptions.</div>
+    <div class="actions"><button data-test="calendar">Tester l'agenda</button></div>
+  </section>
+
+  <section class="card">
+    <h2>📋 Backlog Notion (actions validées)</h2>
+    <div class="grid">
+      <div><label>Workspace</label><select id="bl_ws"><option value="company">Entreprise</option><option value="personal">Perso</option></select></div>
+      <div><label>Base backlog (ID ou URL)</label><input type="text" id="bl_db" placeholder="https://www.notion.so/…" /></div>
+      <div><label>Statut à l'import (optionnel)</label><input type="text" id="bl_status" placeholder="À trier" /></div>
+    </div>
+    <div class="hint">Titre, échéance, priorité, statut et source sont détectés automatiquement d'après les propriétés de la base. Une valeur sans option correspondante n'est jamais inventée.</div>
+    <div class="actions"><button data-test="backlog">Vérifier la base</button></div>
   </section>
 
   <section class="card">
@@ -73,11 +150,11 @@
     </div>
     <label class="inline"><input type="checkbox" id="l_bg" /> Automatisation dans des onglets en arrière-plan</label>
     <div class="actions"><button data-test="gmail">Tester Gmail</button></div>
+    <div class="hint">Gmail et Agenda utilisent le même consentement Google (lecture seule).</div>
   </section>
 
   <div class="actions">
     <button class="primary" id="save">Enregistrer</button>
-    <button id="runNow">Lancer le brief maintenant</button>
     <span id="msg" class="hint"></span>
   </div>
 

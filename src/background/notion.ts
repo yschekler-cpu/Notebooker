@@ -131,6 +131,28 @@ export class NotionClient {
     return lines.filter(Boolean).join("\n");
   }
 
+  /** Schéma des propriétés d'une base (nom → type + options select/status). */
+  async databaseSchema(databaseId: string): Promise<DbSchema> {
+    const db = await this.call<{ title?: { plain_text: string }[]; properties: Record<string, RawProp> }>(`/databases/${clean(databaseId)}`);
+    return {
+      title: (db.title ?? []).map((t) => t.plain_text).join("") || "(base sans titre)",
+      properties: Object.fromEntries(
+        Object.entries(db.properties).map(([name, p]) => [
+          name,
+          { type: p.type, options: (p.select?.options ?? p.status?.options ?? p.multi_select?.options ?? []).map((o) => o.name) },
+        ]),
+      ),
+    };
+  }
+
+  async createPage(databaseId: string, properties: Json, children: Json[]): Promise<{ id: string; url: string }> {
+    const r = await this.call<{ id: string; url: string }>("/pages", {
+      method: "POST",
+      body: JSON.stringify({ parent: { database_id: clean(databaseId) }, properties, children: children.slice(0, 90) }),
+    });
+    return { id: r.id, url: r.url };
+  }
+
   /** Cible « base Notion » : crée une entrée avec titre + URL + contenu. */
   async createDatabaseEntry(databaseId: string, entry: { title: string; url?: string; text?: string }): Promise<string> {
     const db = await this.call<{ properties: Record<string, { type: string }> }>(`/databases/${clean(databaseId)}`);
@@ -159,6 +181,18 @@ export class NotionClient {
     });
     return r.id;
   }
+}
+
+interface RawProp {
+  type: string;
+  select?: { options?: { name: string }[] };
+  status?: { options?: { name: string }[] };
+  multi_select?: { options?: { name: string }[] };
+}
+
+export interface DbSchema {
+  title: string;
+  properties: Record<string, { type: string; options: string[] }>;
 }
 
 export function clean(id: string): string {

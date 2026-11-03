@@ -11,3 +11,6 @@ export const NOTION_API = E2E ? `${E2E}/notion/v1` : "https://api.notion.com/v1"
 /** undefined = valeur par défaut du SDK Anthropic. */
 export const ANTHROPIC_BASE_URL: string | undefined = E2E ? `${E2E}/anthropic` : undefined;
 export const GMAIL_API = E2E ? `${E2E}/gmail/v1/users/me` : "https://gmail.googleapis.com/gmail/v1/users/me";
+export const CALENDAR_API = E2E ? `${E2E}/calendar/v3` : "https://www.googleapis.com/calendar/v3";
+/** Build E2E uniquement : pas de consentement Google possible en test → jeton factice accepté par le mock. */
+export const E2E_GOOGLE_TOKEN: string | null = E2E ? "e2e-google-token" : null;

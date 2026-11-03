@@ -1,7 +1,7 @@
 import type { DriverCommand, DriverResponse, NotebookSummary } from "../shared/messages";
 import { NOTEBOOKLM_ORIGIN } from "../shared/endpoints";
 import { getSettings } from "../shared/storage";
-import type { SourcePayload } from "../shared/types";
+import type { AudioOptions, SourcePayload } from "../shared/types";
 
 /**
  * Orchestrateur du driver UI : ouvre un onglet NotebookLM, attend le content script,
@@ -149,7 +149,7 @@ export function addSources(notebookId: string, sources: SourcePayload[]): Promis
 export function createNotebookWithAudio(
   title: string,
   sources: SourcePayload[],
-  audioInstructions: string,
+  audio: AudioOptions,
   log: (m: string, level?: "info" | "warn" | "error") => void,
   onCreated: (notebookId: string) => Promise<void> = async () => undefined,
 ): Promise<{ notebookId: string; added: number; audioStarted: boolean }> {
@@ -173,9 +173,10 @@ export function createNotebookWithAudio(
       let audioStarted = false;
       if (added > 0) {
         try {
-          await s.send({ cmd: "generateAudio", instructions: audioInstructions });
+          const report = await s.send<{ applied: string[]; missing: string[] }>({ cmd: "generateAudio", audio });
           audioStarted = true;
-          log("Génération de l'Audio Overview lancée");
+          log(`Génération de l'Audio Overview lancée${report.applied.length ? ` (${report.applied.join(", ")})` : ""}`);
+          if (report.missing.length) log(`Réglages audio non appliqués : ${report.missing.join(", ")}`, "warn");
         } catch (e) {
           log(`Audio Overview non lancé : ${e instanceof Error ? e.message : String(e)} — lance-le manuellement dans le notebook.`, "warn");
         }

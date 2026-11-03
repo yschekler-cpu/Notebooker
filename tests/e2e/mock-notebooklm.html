@@ -165,16 +165,27 @@
     title.addEventListener("keydown", (e) => e.key === "Enter" && commit());
     title.addEventListener("blur", commit);
     app.querySelector(".add-src").onclick = () => openAddSource(id);
-    const startAudio = (instructions) => {
+    const startAudio = (instructions, opts = {}) => {
       const st = load();
-      st.notebooks.find((x) => x.id === id).audio = { startedAt: Date.now(), instructions };
+      st.notebooks.find((x) => x.id === id).audio = { startedAt: Date.now(), instructions, ...opts };
       save(st); closeDialogs(); renderNotebook(false);
       setTimeout(() => nbIdFromPath() === id && renderNotebook(false), 3200);
     };
     const cust = app.querySelector(".customize");
     if (cust) cust.onclick = () => {
-      const d = dialog(`<h2>Customize Audio Overview</h2><textarea aria-label="What should the AI hosts focus on"></textarea><button class="go">Generate</button>`);
-      d.querySelector(".go").onclick = () => startAudio(d.querySelector("textarea").value);
+      // Reproduit la modale réelle : formats (tuiles), durée (boutons), langue (<select>), consignes, « Generate ».
+      const d = dialog(`<h2>Customize Audio Overview</h2>
+        <div role="radiogroup" aria-label="Format">
+          ${[["deep_dive", "Deep Dive"], ["brief", "Brief"], ["critique", "Critique"], ["debate", "Debate"]].map(([k, l]) => `<button role="radio" data-format="${k}" aria-checked="${k === "deep_dive"}"><mat-icon>podcasts</mat-icon>${l}</button>`).join("")}
+        </div>
+        <label>Choose language<select aria-label="Choose language"><option value="en">English</option><option value="fr">Français</option><option value="it">Italiano</option></select></label>
+        <div aria-label="Length">${[["short", "Shorter"], ["default", "Default"], ["long", "Longer"]].map(([k, l]) => `<button data-length="${k}">${l}</button>`).join("")}</div>
+        <textarea aria-label="What should the AI hosts focus on"></textarea>
+        <button class="go">Generate</button>`);
+      let format = "deep_dive", length = "default";
+      d.querySelectorAll("[data-format]").forEach((b) => (b.onclick = () => { format = b.dataset.format; d.querySelectorAll("[data-format]").forEach((x) => x.setAttribute("aria-checked", String(x === b))); }));
+      d.querySelectorAll("[data-length]").forEach((b) => (b.onclick = () => (length = b.dataset.length)));
+      d.querySelector(".go").onclick = () => startAudio(d.querySelector("textarea").value, { format, length, language: d.querySelector("select").value });
     };
     const gen = app.querySelector(".gen");
     if (gen) gen.onclick = () => startAudio("");

@@ -33,7 +33,8 @@ const common = {
   sourcemap: watch || e2e ? "inline" : false,
   minify: !watch && !e2e,
   logLevel: "info",
-  define: e2e ? { __E2E_BASE__: JSON.stringify(E2E_BASE) } : {},
+  // Prod : constante vide → les branches E2E sont éliminées du bundle (dead code), pas seulement inactives.
+  define: { __E2E_BASE__: JSON.stringify(e2e ? E2E_BASE : "") },
 };
 
 // Service worker = module ESM ; content script / pages = IIFE (les content scripts ne supportent pas ESM).

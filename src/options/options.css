@@ -15,7 +15,7 @@ h2 { font-size: 16px; margin: 0 0 12px; }
 section.card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 18px; margin-bottom: 18px; }
 label { display: block; font-size: 13px; font-weight: 500; margin: 10px 0 4px; }
 label.inline { display: flex; align-items: center; gap: 8px; font-weight: 400; }
-input[type=text], input[type=password], input[type=time], input[type=number], select, textarea {
+input[type=text], input[type=password], input[type=time], input[type=date], input[type=number], select, textarea {
   width: 100%; padding: 7px 9px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text); font: inherit;
 }
 textarea { min-height: 70px; resize: vertical; }
@@ -34,3 +34,16 @@ th { font-size: 12px; color: var(--muted); font-weight: 500; }
 details summary { cursor: pointer; }
 code { font-size: 12px; }
 a { color: var(--accent); }
+h3 { font-size: 13px; margin: 18px 0 2px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+.toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 6px; }
+.toolbar select { width: auto; min-width: 180px; flex: 1 1 180px; }
+.days, .checks { display: flex; flex-wrap: wrap; gap: 6px 14px; }
+.days label { display: inline-flex; align-items: center; gap: 4px; margin: 0; font-weight: 400; }
+.badge { display: inline-block; min-width: 20px; padding: 0 7px; border-radius: 10px; background: var(--accent); color: var(--accent-text); font-size: 12px; text-align: center; vertical-align: middle; }
+.badge:empty { display: none; }
+.action { display: grid; grid-template-columns: auto 1fr; gap: 4px 10px; padding: 10px 0; border-bottom: 1px solid var(--border); }
+.action:last-child { border-bottom: none; }
+.action .fields { display: grid; grid-template-columns: 1fr 150px 120px; gap: 6px; }
+.action .meta { grid-column: 2; font-size: 12px; color: var(--muted); }
+.action.error .meta { color: var(--err); }
+@media (max-width: 560px) { .action .fields { grid-template-columns: 1fr; } }

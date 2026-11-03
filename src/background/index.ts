@@ -1,8 +1,10 @@
 import type { BackgroundRequest, NotebookSummary } from "../shared/messages";
-import { nextDailyRun, shouldCatchUp } from "../shared/schedule";
+import { nextRun, shouldCatchUp } from "../shared/schedule";
 import { getSettings, mutateSubscriptions, uid } from "../shared/storage";
 import type { Subscription, Target } from "../shared/types";
 import { lastSuccessfulRun, notify, onAudioAlarm, runBriefing } from "./briefing";
+import { dismissActions, inspectBacklog, pushActions } from "./actions";
+import { calendarWindow, fetchEvents } from "./calendar";
 import { testClaude } from "./claude";
 import { fetchRecentMails } from "./gmail";
 import { audioStatus, listNotebooks, notebookUrl } from "./notebooklm";
@@ -10,7 +12,7 @@ import { NotionClient, clean } from "./notion";
 import { classify, requiredOrigin } from "./classify";
 import { refreshDueSubscriptions, refreshSubscriptionNow, withSyncLock } from "./sync";
 
-const ALARM_BRIEFING = "briefing";
+const ALARM_BRIEFING_PREFIX = "briefing:";
 const ALARM_SYNC = "sync";
 const SYNC_PERIOD_MIN = 15;
 
@@ -24,28 +26,44 @@ chrome.runtime.onStartup.addListener(() => void bootstrap(true));
 
 async function bootstrap(checkCatchUp = false): Promise<void> {
   await chrome.alarms.create(ALARM_SYNC, { periodInMinutes: SYNC_PERIOD_MIN, delayInMinutes: 1 });
-  await scheduleBriefing();
+  await chrome.alarms.clear("briefing"); // alarme unique de la v0.1
+  await scheduleBriefings();
   await rebuildContextMenus();
   if (checkCatchUp) {
     const s = await getSettings();
-    if (s.briefing.enabled && shouldCatchUp(s.briefing.time, s.briefing.weekdaysOnly, await lastSuccessfulRun())) {
-      void runBriefing({ interactive: false });
+    for (const p of s.profiles) {
+      if (p.enabled && shouldCatchUp(p.schedule.time, p.schedule.days, await lastSuccessfulRun(p.id))) {
+        void runBriefing(p.id, { interactive: false });
+      }
     }
   }
 }
 
-async function scheduleBriefing(): Promise<void> {
+/** Une alarme one-shot par profil actif, recalculée à chaque run (jours choisis, changements d'heure). */
+async function scheduleBriefings(): Promise<Record<string, number | null>> {
   const s = await getSettings();
-  await chrome.alarms.clear(ALARM_BRIEFING);
-  if (!s.briefing.enabled) return;
-  // Alarme one-shot recalculée à chaque run : gère jours ouvrés et changements d'heure (DST).
-  await chrome.alarms.create(ALARM_BRIEFING, { when: nextDailyRun(s.briefing.time, s.briefing.weekdaysOnly).getTime() });
+  for (const a of await chrome.alarms.getAll()) if (a.name.startsWith(ALARM_BRIEFING_PREFIX)) await chrome.alarms.clear(a.name);
+  const next: Record<string, number | null> = {};
+  for (const p of s.profiles) {
+    const when = p.enabled ? nextRun(p.schedule.time, p.schedule.days) : null;
+    next[p.id] = when?.getTime() ?? null;
+    if (when) await chrome.alarms.create(`${ALARM_BRIEFING_PREFIX}${p.id}`, { when: when.getTime() });
+  }
+  return next;
+}
+
+async function scheduleBriefing(profileId: string): Promise<void> {
+  const p = (await getSettings()).profiles.find((x) => x.id === profileId);
+  await chrome.alarms.clear(`${ALARM_BRIEFING_PREFIX}${profileId}`);
+  const when = p?.enabled ? nextRun(p.schedule.time, p.schedule.days) : null;
+  if (when) await chrome.alarms.create(`${ALARM_BRIEFING_PREFIX}${profileId}`, { when: when.getTime() });
 }
 
 chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === ALARM_BRIEFING) {
-    // Replanifie AVANT d'exécuter : un run bloqué ou un SW tué ne doit pas supprimer le brief du lendemain.
-    void scheduleBriefing().then(() => runBriefing({ interactive: false }));
+  if (alarm.name.startsWith(ALARM_BRIEFING_PREFIX)) {
+    const id = alarm.name.slice(ALARM_BRIEFING_PREFIX.length);
+    // Replanifie AVANT d'exécuter : un run bloqué ou un SW tué ne doit pas supprimer le créneau suivant.
+    void scheduleBriefing(id).then(() => runBriefing(id, { interactive: false }));
   } else if (alarm.name === ALARM_SYNC) {
     void refreshDueSubscriptions();
   } else if (alarm.name.startsWith("audio:")) {
@@ -202,8 +220,12 @@ async function handle(req: BackgroundRequest): Promise<unknown> {
       void addFromUrl(req.url, req.title, req.target, req.refreshMinutes, ws);
       return "queued";
     }
-    case "runBriefingNow":
-      return runBriefing({ interactive: true });
+    case "runBriefingNow": {
+      const s = await getSettings();
+      const id = req.profileId ?? s.profiles[0]?.id;
+      if (!id) throw new Error("Aucun profil de brief.");
+      return runBriefing(id, { interactive: true });
+    }
     case "refreshSubscriptionsNow":
       return refreshDueSubscriptions(true);
     case "listNotebooks": {
@@ -229,10 +251,25 @@ async function handle(req: BackgroundRequest): Promise<unknown> {
       }
       return changed;
     }
-    case "rescheduleBriefing":
-      await scheduleBriefing();
+    case "rescheduleBriefing": {
+      const next = await scheduleBriefings();
       await rebuildContextMenus();
-      return (await chrome.alarms.get(ALARM_BRIEFING))?.scheduledTime ?? null;
+      return next;
+    }
+    case "testCalendar": {
+      const events = await fetchEvents((await getSettings()).calendar, calendarWindow(), true);
+      return `${events.length} réunion(s) lisible(s) sur la fenêtre du prochain brief`;
+    }
+    case "inspectBacklog": {
+      const r = await inspectBacklog(await getSettings());
+      const m = r.mapping;
+      const fields = [`titre → « ${m.title} »`, m.due && `échéance → « ${m.due} »`, m.priority && `priorité → « ${m.priority.name} »`, m.status && `statut → « ${m.status.name} »`, m.source && `source → « ${m.source} »`].filter(Boolean);
+      return `Base « ${r.title} » : ${fields.join(", ")}${r.warnings.length ? ` ⚠️ ${r.warnings.join(" ")}` : ""}`;
+    }
+    case "actionsOp":
+      if (req.op === "push") return pushActions(req.ids, req.edits);
+      await dismissActions(req.ids);
+      return { dismissed: req.ids.length };
     case "testNotion":
       return new NotionClient((await getSettings()).notion[req.workspace]).me();
     case "testGmail": {

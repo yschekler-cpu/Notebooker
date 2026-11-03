@@ -1,4 +1,5 @@
-import type { BriefingRun, Folder, NotebookMeta, Settings, Subscription } from "./types";
+import { defaultProfile, migrateRawSettings, normalizeProfile } from "./profiles";
+import type { ActionItem, BriefingRun, BriefMemory, Folder, NotebookMeta, Settings, Subscription } from "./types";
 
 /**
  * Règle de stockage :
@@ -7,19 +8,10 @@ import type { BriefingRun, Folder, NotebookMeta, Settings, Subscription } from "
  */
 
 export const DEFAULT_SETTINGS: Settings = {
-  briefing: {
-    enabled: false,
-    time: "07:30",
-    weekdaysOnly: true,
-    lookbackHours: 24,
-    gmailQuery: "in:inbox -category:promotions -category:social",
-    gmailMaxMessages: 40,
-    gmailExclusions: [],
-    notebookTitleTemplate: "☀️ Brief du {date}",
-    audioInstructions:
-      "Podcast en français, 8-10 minutes. Commence par les 3 sujets les plus urgents (décisions attendues, deadlines du jour), puis les mises à jour projets, puis le reste. Ton factuel, pas de remplissage.",
-    retentionDays: 7,
-  },
+  profiles: [defaultProfile()],
+  compliance: { gmailExclusions: [] },
+  calendar: { calendarIds: ["primary"], hidePrivateEvents: true, skipDeclined: true },
+  backlog: { workspace: "company", databaseId: "", defaultStatus: "" },
   notion: {
     personal: { label: "Notion perso", token: "", briefingRootIds: [] },
     company: { label: "Notion entreprise", token: "", briefingRootIds: [] },
@@ -51,7 +43,16 @@ function deepMerge<T>(base: T, patch: unknown): T {
 
 export async function getSettings(): Promise<Settings> {
   const { settings } = await chrome.storage.local.get("settings");
-  return deepMerge(DEFAULT_SETTINGS, settings);
+  return resolveSettings(settings as Record<string, unknown> | undefined);
+}
+
+/** Migration + valeurs par défaut + normalisation des profils (pur, testable). */
+export function resolveSettings(raw: Record<string, unknown> | undefined): Settings {
+  const merged = deepMerge(DEFAULT_SETTINGS, migrateRawSettings(raw));
+  const profiles = Array.isArray(merged.profiles) && merged.profiles.length ? merged.profiles : DEFAULT_SETTINGS.profiles;
+  const ids = new Set<string>();
+  merged.profiles = profiles.map((p) => normalizeProfile(p)).filter((p) => !ids.has(p.id) && ids.add(p.id));
+  return merged;
 }
 
 export async function saveSettings(settings: Settings): Promise<void> {
@@ -157,4 +158,39 @@ export async function saveBriefingRun(run: BriefingRun): Promise<void> {
 
 export function uid(): string {
   return crypto.randomUUID();
+}
+
+// ─── Actions à valider (local) ────────────────────────────────────────────────
+
+const MAX_ACTIONS = 300;
+let actionsChain: Promise<unknown> = Promise.resolve();
+
+export async function getActions(): Promise<ActionItem[]> {
+  const { actionItems } = await chrome.storage.local.get("actionItems");
+  return (actionItems as ActionItem[] | undefined) ?? [];
+}
+
+/** Lecture-modification-écriture sérialisée de la file d'actions. */
+export function mutateActions(fn: (items: ActionItem[]) => ActionItem[]): Promise<ActionItem[]> {
+  const run = actionsChain.then(async () => {
+    const next = fn(await getActions())
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .slice(0, MAX_ACTIONS);
+    await chrome.storage.local.set({ actionItems: next });
+    return next;
+  });
+  actionsChain = run.catch(() => undefined);
+  return run;
+}
+
+// ─── Mémoire des briefs (local) ───────────────────────────────────────────────
+
+export async function getMemory(profileId: string): Promise<BriefMemory> {
+  const key = `briefMemory:${profileId}`;
+  const v = (await chrome.storage.local.get(key))[key] as BriefMemory | undefined;
+  return v ?? { lastBriefDate: null, previousBriefDate: null, topics: {} };
+}
+
+export async function saveMemory(profileId: string, memory: BriefMemory): Promise<void> {
+  await chrome.storage.local.set({ [`briefMemory:${profileId}`]: memory });
 }

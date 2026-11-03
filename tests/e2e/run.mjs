@@ -37,6 +37,13 @@ async function test(name, fn) {
 const NOTION_PAGE = "0123456789abcdef0123456789abcdef";
 const notionCalls = [];
 const claudeCalls = [];
+const googleCalls = [];
+const backlogPages = [];
+const BACKLOG_DB = "fedcba9876543210fedcba9876543210";
+const MAILS = [
+  { id: "m1", threadId: "t-kyc", from: "Marco Rossi <marco.rossi@example.it>", subject: "RE: Codice fiscale Italie", body: "Peux-tu valider le codice fiscale avant J+2 ? IBAN IT60 X054 2811 1010 0000 0123 456" },
+  { id: "m2", threadId: "t-news", from: "newsletter@fintech.example", subject: "Weekly fintech", body: "Les news de la semaine." },
+];
 
 function notionPage(id, title, edited) {
   return { object: "page", id, url: `https://www.notion.so/${id}`, last_edited_time: edited, properties: { Name: { type: "title", title: [{ plain_text: title }] } } };
@@ -81,6 +88,21 @@ function startMockServer() {
       if (path === "/v1/users/me") return json({ bot: { workspace_name: "Opale (mock)" } });
       if (path === "/v1/search") return json({ results: [notionPage(NOTION_PAGE, "Spec KYC Italie", now)], has_more: false, next_cursor: null });
       if (path.startsWith("/v1/pages/")) return json(notionPage(NOTION_PAGE, "Spec KYC Italie", now));
+      if (path === `/v1/databases/${BACKLOG_DB}` && req.method === "GET")
+        return json({
+          title: [{ plain_text: "Backlog produit" }],
+          properties: {
+            Nom: { type: "title" },
+            Échéance: { type: "date" },
+            Priorité: { type: "select", select: { options: [{ name: "P1 - Haute" }, { name: "P2 - Moyenne" }, { name: "P3 - Basse" }] } },
+            Statut: { type: "status", status: { options: [{ name: "À trier" }, { name: "En cours" }] } },
+          },
+        });
+      if (path === "/v1/pages" && req.method === "POST") {
+        const body = JSON.parse(raw || "{}");
+        backlogPages.push(body);
+        return json({ id: `page-${backlogPages.length}`, url: `https://www.notion.so/page-${backlogPages.length}` });
+      }
       if (path.includes("/children"))
         return json({
           results: [
@@ -96,7 +118,10 @@ function startMockServer() {
     if (url.pathname.startsWith("/anthropic/")) {
       const body = JSON.parse(raw || "{}");
       claudeCalls.push({ url: url.href, headers: req.headers, body });
-      const text = "## À traiter aujourd'hui\n- Valider le codice fiscale [Notion: Spec KYC Italie]";
+      const isActions = !!body.output_config?.format;
+      const text = isActions
+        ? JSON.stringify({ actions: [{ title: "Valider le codice fiscale avant J+2", requester: "Marco Rossi", due: "2026-11-05", priority: "haute", source: "[Mail: Codice fiscale]", context: "Bloquant pour l'ouverture Italie." }] })
+        : "## À traiter aujourd'hui\n- Valider le codice fiscale [Notion: Spec KYC Italie]";
       if (body.stream) {
         res.writeHead(200, { "content-type": "text/event-stream" });
         return res.end(sse(text));
@@ -104,7 +129,29 @@ function startMockServer() {
       return json({ id: "msg_mock", type: "message", role: "assistant", model: "claude-opus-5-5", content: [{ type: "text", text: "OK" }], stop_reason: "end_turn", stop_sequence: null, usage: { input_tokens: 1, output_tokens: 1 } });
     }
 
-    if (url.pathname.startsWith("/gmail/")) return json({ error: "not configured" }, 401);
+    if (url.pathname.startsWith("/gmail/")) {
+      googleCalls.push({ path: url.pathname, query: url.searchParams.get("q"), auth: req.headers.authorization });
+      if (url.pathname.endsWith("/messages")) return json({ messages: MAILS.map((m) => ({ id: m.id, threadId: m.threadId })) });
+      const m = MAILS.find((x) => url.pathname.endsWith(`/messages/${x.id}`));
+      if (!m) return json({}, 404);
+      return json({
+        id: m.id, threadId: m.threadId, snippet: m.body.slice(0, 80), internalDate: String(Date.now() - 3600_000), labelIds: ["INBOX"],
+        payload: { mimeType: "text/plain", headers: [{ name: "From", value: m.from }, { name: "Subject", value: m.subject }], body: { data: Buffer.from(m.body).toString("base64url") } },
+      });
+    }
+
+    if (url.pathname.startsWith("/calendar/v3/")) {
+      googleCalls.push({ path: url.pathname, auth: req.headers.authorization });
+      const at = (h) => { const d = new Date(); d.setHours(h, 0, 0, 0); return d.toISOString(); };
+      return json({
+        items: [
+          { id: "ev1", summary: "Comité KYC Italie", description: "Ordre du jour : codice fiscale. Lien : https://meet.google.com/abc-defg-hij", start: { dateTime: at(23) }, end: { dateTime: at(23) },
+            attendees: [{ email: "moi@opale.fr", self: true, responseStatus: "accepted" }, { email: "marco.rossi@example.it", displayName: "Marco Rossi" }] },
+          { id: "ev2", summary: "Dentiste", visibility: "private", start: { dateTime: at(23) }, end: { dateTime: at(23) } },
+          { id: "ev3", summary: "Réunion refusée", start: { dateTime: at(23) }, end: { dateTime: at(23) }, attendees: [{ email: "moi@opale.fr", self: true, responseStatus: "declined" }] },
+        ],
+      });
+    }
 
     res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     res.end(MOCK);
@@ -125,6 +172,15 @@ const waitFor = async (fn, ms = 20_000, step = 250) => {
   }
 };
 
+/** Attend un message dans le bandeau des options ; en cas d'échec, affiche le message réel. */
+async function waitMsg(page, re, ms = 20_000) {
+  try {
+    await waitFor(async () => re.test((await page.textContent("#msg")) ?? ""), ms);
+  } catch {
+    throw new Error(`message attendu ${re} — reçu : « ${await page.textContent("#msg")} »`);
+  }
+}
+
 // ─── Scénarios ────────────────────────────────────────────────────────────────
 
 const ctx = await chromium.launchPersistentContext("", {
@@ -141,7 +197,11 @@ try {
   const options = await ctx.newPage();
   options.on("pageerror", (e) => errors.push(`options: ${e.message}`));
   await options.goto(`chrome-extension://${extId}/options.html`);
-  const send = (msg) => options.evaluate((m) => chrome.runtime.sendMessage(m), msg);
+  const send = async (msg) => {
+    if (!options.url().startsWith("chrome-extension://")) await options.goto(`chrome-extension://${extId}/options.html`);
+    return options.evaluate((m) => chrome.runtime.sendMessage(m), msg);
+  };
+  // La page options peut être rechargée par les scénarios : `send` passe toujours par une page d'extension vivante.
 
   const home = await ctx.newPage();
   home.on("pageerror", (e) => errors.push(`home: ${e.message}`));
@@ -261,68 +321,174 @@ try {
     assert.deepEqual(feed.seenItemIds.sort(), ["a", "b"]);
   });
 
-  await test("brief : Notion (masquage PII) + synthèse Claude (OAuth) → notebook + sources + Audio Overview", async () => {
-    await sw.evaluate(async () => {
+  await test("brief complet : Gmail + Agenda + Notion + mémoire + Claude (synthèse + actions) → notebook, audio paramétré", async () => {
+    await sw.evaluate(async ({ db }) => {
       const { settings = {} } = await chrome.storage.local.get("settings");
       await chrome.storage.local.set({
         settings: {
           ...settings,
-          briefing: { ...(settings.briefing ?? {}), enabled: false, retentionDays: 0 },
+          profiles: [{
+            id: "daily", name: "Brief du matin", enabled: false, schedule: { time: "07:30", days: [1, 2, 3, 4, 5] }, lookbackHours: 24,
+            sources: { gmail: true, calendar: true, notionPersonal: false, notionCompany: true },
+            gmailQuery: "in:inbox", gmailMaxMessages: 10, notebookTitleTemplate: "☀️ Brief du {date}",
+            audio: { format: "brief", length: "short", language: "fr", instructions: "Cinq minutes, sujets urgents d'abord." },
+            synthesisFocus: "", memory: true, extractActions: true, retentionDays: 0,
+          }],
+          compliance: { gmailExclusions: ["newsletter@fintech.example", "label:kyc"] },
+          calendar: { calendarIds: ["primary"], hidePrivateEvents: true, skipDeclined: true },
+          backlog: { workspace: "company", databaseId: db, defaultStatus: "À trier" },
           notion: { personal: { label: "Notion perso", token: "", briefingRootIds: [] }, company: { label: "Notion entreprise", token: "secret_mock", briefingRootIds: [] } },
           claude: { enabled: true, authMode: "oauth_token", oauthToken: "oat_mock", apiKey: "", model: "claude-opus-5-5", redactPII: true, redactAmounts: false },
         },
       });
-    });
-    const beforeState = await mockState(home);
-    const before = beforeState.notebooks.length;
-    const r = await send({ type: "runBriefingNow" });
+    }, { db: BACKLOG_DB });
+    const before = (await mockState(home)).notebooks.length;
+    const r = await send({ type: "runBriefingNow", profileId: "daily" });
     assert.ok(r.ok, r.error);
     const run = r.data;
-    assert.equal(run.status, "partial", `Gmail non configuré en test → partial attendu. Steps: ${JSON.stringify(run.steps)}`);
-    assert.ok(run.steps.some((x) => /Gmail non configuré/.test(x.message)), "cause Gmail explicite dans l'historique");
-    assert.equal(run.sourcesCount, 2);
+    assert.equal(run.status, "success", `Steps: ${JSON.stringify(run.steps.map((x) => x.message))}`);
+    assert.equal(run.profileName, "Brief du matin");
+    assert.equal(run.sourcesCount, 5);
 
     const st = await mockState(home);
     assert.equal(st.notebooks.length, before + 1);
     const nb = st.notebooks.find((n) => n.id === run.notebookId);
     assert.match(nb.title, /^☀️ Brief du /);
-    // Le piège « Créer une holding » ne doit pas avoir été ouvert / renommé / rempli
+    assert.deepEqual(nb.sources.map((x) => x.title.split(" — ")[0]), ["Brief synthétisé", "Agenda du jour", "Suivi depuis le dernier brief", "Emails", "Notion entreprise"]);
+    const [, agenda, suivi, mails, notionSrc] = nb.sources.map((x) => x.value);
+
+    // Agenda : réunion + préparation ; privé anonymisé ; refusée ignorée ; lien visio retiré
+    assert.match(agenda, /Comité KYC Italie/);
+    assert.match(agenda, /À relire avant :\n- \[Mail\] RE: Codice fiscale Italie/);
+    assert.match(agenda, /\[Notion\] Spec KYC Italie/);
+    assert.match(agenda, /Événement privé/);
+    assert.ok(!/Dentiste|Réunion refusée|meet\.google\.com/.test(agenda), agenda);
+    // Mémoire : J1 → tout est nouveau
+    assert.match(suivi, /Nouveaux sujets \(3\)/);
+    // Masquage avant NotebookLM
+    assert.ok(!/IT60|marco\.rossi@example\.it/.test(mails + agenda + notionSrc), "IBAN / emails masqués");
+    assert.match(mails, /\[IBAN\]/);
+    // Exclusions de conformité injectées dans la requête Gmail
+    const q = googleCalls.find((g) => g.path.endsWith("/messages"))?.query ?? "";
+    assert.match(q, /-from:newsletter@fintech\.example/);
+    assert.match(q, /-label:kyc/);
+    // Audio paramétré via la modale « Personnaliser »
+    assert.equal(nb.audio.format, "brief");
+    assert.equal(nb.audio.length, "short");
+    assert.equal(nb.audio.language, "fr");
+    assert.match(nb.audio.instructions, /Cinq minutes/);
+    assert.ok(!run.steps.some((x) => /Réglages audio non appliqués/.test(x.message)), "tous les réglages audio appliqués");
+
+    // Claude : 2 requêtes (synthèse + extraction), même préfixe en cache, extraction en json_schema
+    assert.equal(claudeCalls.length, 2);
+    for (const c of claudeCalls) {
+      assert.equal(c.headers.authorization, "Bearer oat_mock");
+      assert.match(c.headers["anthropic-beta"], /oauth-2025-04-20/);
+      assert.equal(c.body.fallbacks, "default");
+      const first = c.body.messages[0].content[0];
+      assert.deepEqual(first.cache_control, { type: "ephemeral" });
+      assert.match(first.text, /## AGENDA/);
+      assert.ok(!first.text.includes("marco.rossi@example.it") && first.text.includes("[EMAIL]"), "PII masquée avant envoi à Claude");
+    }
+    assert.equal(claudeCalls[0].body.messages[0].content[0].text, claudeCalls[1].body.messages[0].content[0].text);
+    assert.equal(claudeCalls[1].body.output_config.format.type, "json_schema");
+
+    // Action en file de validation, rien n'est parti dans Notion
+    const { actionItems } = await sw.evaluate(() => chrome.storage.local.get("actionItems"));
+    assert.equal(actionItems.length, 1);
+    assert.equal(actionItems[0].status, "pending");
+    assert.equal(backlogPages.length, 0, "aucune écriture backlog sans validation");
+
     const trap = st.notebooks.find((n) => n.id === "cccccccc-0000-4000-8000-000000000000");
     assert.equal(trap.title, "Créer une holding");
     assert.equal(trap.sources.length, 0);
-    const tracked = (await sw.evaluate(() => chrome.storage.local.get("briefNotebooks"))).briefNotebooks;
-    assert.deepEqual(tracked.map((x) => x.id), [run.notebookId], "seul le notebook créé est tracé pour la rétention");
     const tabs = await sw.evaluate(() => chrome.tabs.query({ url: "http://127.0.0.1/notebook/*" }));
     assert.equal(tabs.length, 0, "onglet d'automatisation refermé");
-    assert.deepEqual(nb.sources.map((s) => s.kind), ["text", "text"]);
-    assert.match(nb.sources[0].title, /^Brief synthétisé/);
-    assert.match(nb.sources[1].value, /Valider le codice fiscale/);
-    assert.ok(!nb.sources[1].value.includes("marco.rossi@example.it"), "email masqué dans la source NotebookLM");
-    assert.ok(nb.audio, "Audio Overview lancé");
-    assert.match(nb.audio.instructions, /Podcast en français/);
+  });
 
-    // Requête Claude réellement émise par le SDK dans le service worker
-    assert.equal(claudeCalls.length, 1);
-    const c = claudeCalls[0];
-    assert.equal(c.headers.authorization, "Bearer oat_mock");
-    assert.equal(c.headers["x-api-key"], undefined);
-    assert.match(c.headers["anthropic-beta"], /oauth-2025-04-20/);
-    assert.match(c.headers["anthropic-beta"], /server-side-fallback-2026-07-01/);
-    assert.equal(c.headers["anthropic-dangerous-direct-browser-access"], "true");
-    assert.equal(c.body.model, "claude-opus-5-5");
-    assert.equal(c.body.fallbacks, "default");
-    assert.equal(c.body.stream, true);
-    const sent = JSON.stringify(c.body.messages);
-    assert.ok(!sent.includes("marco.rossi@example.it") && sent.includes("[EMAIL]"), "PII masquée avant envoi à Claude");
-    assert.ok(notionCalls.every((n) => n.headers.authorization === "Bearer secret_mock" && n.headers["notion-version"] === "2022-06-28"));
+  await test("actions : validation dans les options (titre/échéance corrigés) → page créée dans le backlog avec mapping auto", async () => {
+    await options.goto("about:blank");
+    await options.goto(`chrome-extension://${extId}/options.html#actions`);
+    const row = options.locator("#actionsList .action");
+    await row.first().waitFor();
+    assert.equal(await row.count(), 1);
+    assert.equal(await options.textContent("#actionsCount"), "1");
+    await row.locator(".a-title").fill("Valider le codice fiscale (Italie)");
+    await row.locator(".a-due").fill("2026-11-06");
+    await options.click("[data-test=backlog]");
+    await waitMsg(options, /Backlog produit/);
+    assert.match(await options.textContent("#msg"), /échéance → « Échéance »/);
+    await options.click("#actionsPush");
+    await waitMsg(options, /envoyée\(s\) au backlog/, 15_000);
+    assert.equal(backlogPages.length, 1);
+    const p = backlogPages[0];
+    assert.equal(p.parent.database_id, BACKLOG_DB);
+    assert.equal(p.properties.Nom.title[0].text.content, "Valider le codice fiscale (Italie)");
+    assert.equal(p.properties.Échéance.date.start, "2026-11-06");
+    assert.equal(p.properties.Priorité.select.name, "P1 - Haute");
+    assert.equal(p.properties.Statut.status.name, "À trier");
+    await waitFor(async () => (await options.locator("#actionsList .action").count()) === 0);
+  });
+
+  await test("mémoire J+1 : sujets « toujours actifs » ; action déjà traitée non re-proposée", async () => {
+    // Simule le passage d'un jour : la mémoire et l'historique d'actions datent d'hier.
+    await sw.evaluate(async () => {
+      const key = "briefMemory:daily";
+      const m = (await chrome.storage.local.get(key))[key];
+      const y = new Date(Date.now() - 86_400_000);
+      const day = `${y.getFullYear()}-${String(y.getMonth() + 1).padStart(2, "0")}-${String(y.getDate()).padStart(2, "0")}`;
+      for (const t of Object.values(m.topics)) { t.firstSeen = day; t.lastSeen = day; }
+      m.lastBriefDate = day;
+      await chrome.storage.local.set({ [key]: m });
+    });
+    claudeCalls.length = 0;
+    const r = await send({ type: "runBriefingNow", profileId: "daily" });
+    assert.ok(r.ok, r.error);
+    const nb = (await mockState(home)).notebooks.find((n) => n.id === r.data.notebookId);
+    const suivi = nb.sources.find((x) => x.title.startsWith("Suivi")).value;
+    assert.match(suivi, /Toujours actifs \(3\)/, suivi);
+    assert.match(suivi, /actif 2 jours/);
+    // Le contexte mémoire est transmis à la synthèse Claude
+    assert.match(claudeCalls[0].body.messages[0].content[1].text, /SUIVI DEPUIS LE DERNIER BRIEF/);
+    const { actionItems } = await sw.evaluate(() => chrome.storage.local.get("actionItems"));
+    assert.equal(actionItems.filter((a) => a.status === "pending").length, 0, "action déjà envoyée → pas de doublon");
+  });
+
+  await test("profils : création « Digest Comex » depuis l'UI, planification, exécution dédiée", async () => {
+    await options.goto("about:blank");
+    await options.goto(`chrome-extension://${extId}/options.html`);
+    await options.selectOption("#p_template", "comex");
+    await options.click("#p_new");
+    assert.equal(await options.inputValue("#p_name"), "Digest Comex (lundi)");
+    assert.equal(await options.isChecked("#p_src_gmail"), false);
+    await options.check("#p_enabled");
+    await options.click("#save");
+    await waitMsg(options, /Digest Comex \(lundi\) :/);
+    const alarms = (await sw.evaluate(() => chrome.alarms.getAll())).map((a) => a.name);
+    const settings = (await sw.evaluate(() => chrome.storage.local.get("settings"))).settings;
+    const comex = settings.profiles.find((p) => p.name.startsWith("Digest Comex"));
+    assert.ok(alarms.includes(`briefing:${comex.id}`), `alarme dédiée : ${alarms}`);
+    assert.ok(!alarms.includes("briefing:daily"), "profil inactif → pas d'alarme");
+    const next = new Date((await sw.evaluate((n) => chrome.alarms.get(n), `briefing:${comex.id}`)).scheduledTime);
+    assert.equal(next.getDay(), 1, "planifié un lundi");
+
+    googleCalls.length = 0;
+    const r = await send({ type: "runBriefingNow", profileId: comex.id });
+    assert.ok(r.ok, r.error);
+    assert.equal(r.data.profileName, "Digest Comex (lundi)");
+    const nb = (await mockState(home)).notebooks.find((n) => n.id === r.data.notebookId);
+    assert.ok(nb, `notebook Comex absent : ${JSON.stringify(r.data).slice(0, 600)}`);
+    assert.match(nb.title, /^📊 Digest Comex/);
+    assert.equal(googleCalls.length, 0, "profil Comex : ni Gmail ni Agenda");
+    assert.equal(nb.audio.format, "brief");
   });
 
   await test("brief : verrou → un second lancement concurrent est ignoré", async () => {
-    await sw.evaluate(() => chrome.storage.local.set({ briefingLock: Date.now() }));
-    const r = await send({ type: "runBriefingNow" });
+    await sw.evaluate(() => chrome.storage.local.set({ "briefingLock:daily": Date.now() }));
+    const r = await send({ type: "runBriefingNow", profileId: "daily" });
     assert.ok(r.ok);
     assert.match(r.data.skipped, /déjà en cours/);
-    await sw.evaluate(() => chrome.storage.local.remove("briefingLock"));
+    await sw.evaluate(() => chrome.storage.local.remove("briefingLock:daily"));
   });
 
   await test("driver : statut audio generating → ready", async () => {
@@ -358,15 +524,41 @@ try {
   await test("options : tests de connexion Notion / Claude + enregistrement planifie le brief", async () => {
     await options.reload();
     await options.click("[data-test=notion-company]");
-    await waitFor(async () => /Opale \(mock\)/.test(await options.textContent("#msg")));
+    await waitMsg(options, /Opale \(mock\)/);
     await options.click("[data-test=claude]");
-    await waitFor(async () => /✅|❌/.test(await options.textContent("#msg")));
+    await waitMsg(options, /✅|❌/);
     assert.match(await options.textContent("#msg"), /✅/);
-    await options.check("#b_enabled");
+    await options.click("[data-test=calendar]");
+    await waitMsg(options, /réunion\(s\) lisible/);
+    assert.match(await options.textContent("#msg"), /2 réunion/, "privé conservé (anonymisé), refusé ignoré");
+    await options.selectOption("#p_select", "daily");
+    await options.check("#p_enabled");
     await options.click("#save");
-    await waitFor(async () => /Prochain brief/.test(await options.textContent("#msg")));
-    const alarm = await sw.evaluate(() => chrome.alarms.get("briefing"));
+    await waitMsg(options, /Brief du matin :/);
+    const alarm = await sw.evaluate(() => chrome.alarms.get("briefing:daily"));
     assert.ok(alarm && alarm.scheduledTime > Date.now());
+    assert.match(await options.textContent("#p_next"), /Prochain passage/);
+  });
+
+  await test("options : un onglet resté ouvert ne réécrit pas des réglages modifiés ailleurs", async () => {
+    await options.goto("about:blank");
+    await options.goto(`chrome-extension://${extId}/options.html`);
+    await options.waitForSelector("#bl_db");
+    await sw.evaluate(async () => {
+      const { settings } = await chrome.storage.local.get("settings");
+      settings.backlog.defaultStatus = "En cours";
+      await chrome.storage.local.set({ settings });
+    });
+    await waitFor(async () => (await options.inputValue("#bl_status")) === "En cours", 5000);
+    // Formulaire modifié localement puis changement externe → avertissement, pas d'écrasement silencieux
+    await options.fill("#p_name", "Brief du matin (édité)");
+    await sw.evaluate(async () => {
+      const { settings } = await chrome.storage.local.get("settings");
+      settings.backlog.defaultStatus = "À trier";
+      await chrome.storage.local.set({ settings });
+    });
+    await waitMsg(options, /modifiés dans un autre onglet/, 5000);
+    assert.equal(await options.inputValue("#p_name"), "Brief du matin (édité)", "saisie locale conservée");
   });
 
   await test("sécurité : depuis le monde isolé du content script, ni brief ni lecture des tokens", async () => {

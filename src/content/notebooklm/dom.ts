@@ -19,6 +19,18 @@ export const LABELS = {
   audioOverview: ["audio overview", "résumé audio", "aperçu audio"],
   audioPlay: ["play", "lire", "lecture", "charger l'audio", "load audio"],
   audioGenerating: ["generating", "génération en cours", "generation en cours", "génération"],
+  audioFormat: {
+    deep_dive: ["deep dive", "analyse approfondie", "approfondi", "en profondeur"],
+    brief: ["brief", "bref", "résumé", "resume", "synthèse"],
+    critique: ["critique", "critic", "avis critique"],
+    debate: ["debate", "débat", "debat"],
+  },
+  audioLength: {
+    short: ["shorter", "plus court", "court", "short"],
+    default: ["default", "par défaut", "standard", "normal"],
+    long: ["longer", "plus long", "long"],
+  },
+  languageControl: ["language", "langue", "output language", "langue de sortie", "choose language", "choisir la langue"],
   moreMenu: ["more options", "more actions", "plus d'options", "plus d'actions", "project actions", "more", "plus", "options"],
   delete: ["delete", "supprimer"],
   confirm: ["delete", "supprimer", "confirm", "confirmer", "ok"],
