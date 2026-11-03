@@ -13,6 +13,10 @@ Extension Chrome (Manifest V3) pour NotebookLM :
 
 ---
 
+## Interface
+
+Style **Liquid Glass** (Apple) sur les trois surfaces — réglages, popup, organiseur injecté dans NotebookLM : matériau translucide (flou + saturation) sur fond vivant, reflet spéculaire, icônes façon Réglages iOS, interrupteurs, boutons pilule, barre collante avec navigation par section, toast flottant. Thèmes clair/sombre automatiques ; repli en surfaces pleines si la transparence est réduite (`prefers-reduced-transparency`) ou non supportée ; animations coupées avec `prefers-reduced-motion`. Design system unique : `src/options/options.css` (réglages + popup) et CSS Shadow DOM de `organizer.ts`.
+
 ## Architecture
 
 ```

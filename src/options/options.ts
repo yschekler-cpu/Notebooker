@@ -8,10 +8,14 @@ import type { ActionPriority, AudioFormat, AudioLength, BriefProfile, Settings, 
 
 const $ = <T extends HTMLElement = HTMLInputElement>(id: string) => document.getElementById(id) as T;
 const lines = (id: string) => $<HTMLTextAreaElement>(id).value.split("\n").map((l) => l.trim()).filter(Boolean);
+let toastTimer: ReturnType<typeof setTimeout> | undefined;
 const say = (t: string, cls = "") => {
   const m = $("msg");
   m.textContent = t;
-  m.className = `hint ${cls}`;
+  m.className = `toast ${cls}`;
+  // Le toast disparaît seul, sauf pendant une opération en cours (« … ») ou sur une erreur.
+  clearTimeout(toastTimer);
+  if (!/…$/.test(t) && cls !== "error") toastTimer = setTimeout(() => (m.textContent = ""), 6000);
 };
 
 async function send<T>(msg: unknown): Promise<T> {
@@ -274,6 +278,24 @@ async function renderOrgStats(): Promise<void> {
   $("orgStats").textContent = `${folders.length} dossiers · ${list.filter((m) => m.folderId).length} notebooks classés · ${list.filter((m) => m.pinned).length} épinglés`;
 }
 
+/** Pastille de navigation active = section la plus visible sous la barre d'application. */
+function trackActiveSection(): void {
+  const links = new Map(Array.from(document.querySelectorAll<HTMLAnchorElement>(".nav a")).map((a) => [a.hash.slice(1), a]));
+  const visible = new Map<string, number>();
+  const io = new IntersectionObserver(
+    (entries) => {
+      for (const e of entries) visible.set(e.target.id, e.isIntersecting ? e.intersectionRatio : 0);
+      const best = [...visible.entries()].sort((a, b) => b[1] - a[1])[0];
+      links.forEach((a, id) => a.classList.toggle("active", !!best && best[1] > 0 && id === best[0]));
+      const active = best && links.get(best[0]);
+      // Défilement horizontal de la barre uniquement (jamais de saut vertical de la page)
+      if (active?.parentElement) active.parentElement.scrollTo({ left: active.offsetLeft - 24, behavior: "smooth" });
+    },
+    { rootMargin: "-120px 0px -40% 0px", threshold: [0, 0.15, 0.4, 0.7] },
+  );
+  document.querySelectorAll("main section.card[id]").forEach((sec) => io.observe(sec));
+}
+
 function esc(s: string): string {
   return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 }
@@ -465,6 +487,7 @@ async function init(): Promise<void> {
 
   await Promise.all([renderSubs(), renderRuns(), renderOrgStats(), renderActions()]);
   if (location.hash === "#actions") $("actions").scrollIntoView();
+  trackActiveSection();
 }
 
 void init();

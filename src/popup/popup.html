@@ -4,52 +4,57 @@
   <meta charset="utf-8" />
   <title>Notebooker</title>
   <link rel="stylesheet" href="options.css" />
-  <style>
-    body { width: 360px; padding: 14px; margin: 0; }
-    h1 { font-size: 15px; margin: 0 0 10px; }
-    .page { font-size: 12px; color: var(--muted); margin-bottom: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .row { display: flex; gap: 8px; margin-top: 8px; }
-    .row > * { flex: 1; }
-    .status { font-size: 12px; margin-top: 10px; color: var(--muted); min-height: 16px; }
-    hr { border: none; border-top: 1px solid var(--border); margin: 14px 0; }
-  </style>
 </head>
-<body>
-  <h1>📚 Notebooker</h1>
-  <section>
-    <div class="page" id="page"></div>
-    <label>Cible
-      <select id="target"></select>
-    </label>
-    <label>Actualisation
-      <select id="refresh">
-        <option value="0">Ajout unique</option>
-        <option value="60">Toutes les heures</option>
-        <option value="360">Toutes les 6 h</option>
-        <option value="1440" selected>Quotidienne</option>
-        <option value="10080">Hebdomadaire</option>
-      </select>
-    </label>
-    <div class="row">
-      <button id="add" class="primary">Ajouter cette page</button>
+<body class="popup">
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-logo" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 4.5A1.5 1.5 0 0 1 6.5 3H19v15H6.5A1.5 1.5 0 0 0 5 19.5z"/><path d="M5 19.5A1.5 1.5 0 0 0 6.5 21H19v-3"/><path d="M12.5 7.2l.9 2.1 2.1.9-2.1.9-.9 2.1-.9-2.1-2.1-.9 2.1-.9z" fill="currentColor" stroke-width="1"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M4.6 4.6l1.4 1.4M18 18l1.4 1.4M2.5 12h2M19.5 12h2M4.6 19.4L6 18M18 6l1.4-1.4"/></symbol>
+    <symbol id="i-gear" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-1.8-.3 1.6 1.6 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.6 1.6 0 0 0-1-1.5 1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.6 1.6 0 0 0 1.5-1 1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3H9a1.6 1.6 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8V9a1.6 1.6 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1z"/></symbol>
+  </defs>
+</svg>
+<header class="appbar">
+  <div class="row-top">
+    <div class="brand">
+      <div class="logo"><svg><use href="#i-logo"/></svg></div>
+      <div><h1>Notebooker</h1></div>
     </div>
-    <div class="row">
-      <button id="reloadNb">↻ Lister mes notebooks</button>
-    </div>
-  </section>
-  <hr />
-  <section>
-    <label>Profil de brief
-      <select id="briefProfile"></select>
-    </label>
-    <div class="row">
-      <button id="brief">☀️ Brief maintenant</button>
-      <button id="sync">⟳ Sync sources</button>
-    </div>
-    <div class="status" id="status"></div>
-  </section>
-  <hr />
-  <a href="options.html" target="_blank">Réglages, abonnements & historique →</a>
-  <script src="popup.js"></script>
+  </div>
+</header>
+
+<section class="card">
+  <h2><span class="ico" style="--tint:var(--blue)"><svg><use href="#i-plus"/></svg></span>Ajouter cette page</h2>
+  <div class="page-chip"><img id="favicon" alt="" hidden /><span id="page"></span></div>
+  <label for="target">Cible</label>
+  <select id="target"></select>
+  <label for="refresh">Actualisation</label>
+  <select id="refresh">
+    <option value="0">Ajout unique</option>
+    <option value="60">Toutes les heures</option>
+    <option value="360">Toutes les 6 h</option>
+    <option value="1440" selected>Quotidienne</option>
+    <option value="10080">Hebdomadaire</option>
+  </select>
+  <button id="add" class="primary btn-block">Ajouter</button>
+  <div class="btn-row"><button id="reloadNb">↻ Lister mes notebooks</button></div>
+</section>
+
+<section class="card">
+  <h2><span class="ico" style="--tint:var(--orange)"><svg><use href="#i-sun"/></svg></span>Brief podcast</h2>
+  <label for="briefProfile">Profil</label>
+  <select id="briefProfile"></select>
+  <div class="btn-row">
+    <button id="brief" class="primary">Lancer le brief</button>
+    <button id="sync">⟳ Sync sources</button>
+  </div>
+  <div class="status" id="status" role="status" aria-live="polite"></div>
+</section>
+
+<a class="settings-link glass" href="options.html" target="_blank">
+  <span style="display:flex;align-items:center;gap:10px"><span class="ico" style="--tint:var(--gray);width:24px;height:24px;border-radius:7px"><svg style="width:14px;height:14px"><use href="#i-gear"/></svg></span>Réglages, actions &amp; historique</span>
+  <span class="chev">›</span>
+</a>
+<script src="popup.js"></script>
 </body>
 </html>

@@ -32,6 +32,11 @@ async function loadTargets(): Promise<void> {
 async function init(): Promise<void> {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   $("page").textContent = tab?.title ?? tab?.url ?? "";
+  if (tab?.favIconUrl && /^https:/.test(tab.favIconUrl)) {
+    const img = $<HTMLImageElement>("favicon");
+    img.src = tab.favIconUrl;
+    img.hidden = false;
+  }
   await loadTargets();
 
   const runs = await getBriefingRuns();
