@@ -10,6 +10,10 @@
   - modales dans un overlay CDK, bouton « Insert » désactivé tant que le champ est vide
   - boutons leurres aux libellés proches (« Add note », « Discover sources »)
   - génération audio asynchrone persistée (survit à la fermeture de l'onglet)
+  - UI « luminous » Gemini Notebook (localStorage.mockNlmUi = "luminous") : tuile Studio
+    « Résumé audio » → modale « Personnaliser le résumé audio » (cartes de format SANS rôle ARIA,
+    chips leurres « + Priorités critiques », mat-select de langue en overlay, Court / Par défaut),
+    bibliothèque d'artefacts, lecteur audio
 -->
 <style>
   body { font-family: sans-serif; margin: 0; }
@@ -132,6 +136,7 @@
           const st = load();
           const nb = st.notebooks.find((x) => x.id === nbId);
           nb.sources.push({ kind: k, value: v, title: k === "text" ? (v.split("\n")[0] || "Pasted text").replace(/^# /, "") : v });
+          nb.lastSourceAt = Date.now();
           save(st);
           closeDialogs();
           renderNotebook(false);
@@ -146,20 +151,21 @@
     if (!nb) { app.innerHTML = "<p>Notebook not found</p>"; return; }
     const audio = nb.audio;
     const ready = audio && Date.now() - audio.startedAt > 3000;
+    const luminous = localStorage.getItem("mockNlmUi") === "luminous";
     app.innerHTML = `
       <header><input class="title-input" value="${nb.title.replace(/"/g, "&quot;")}" /></header>
       <section class="sources"><h3>Sources</h3>
         <button class="add-src"><mat-icon>add</mat-icon>Add source</button>
         <ul>${nb.sources.map((x) => `<li>${x.title}</li>`).join("")}</ul>
       </section>
-      <section class="studio"><h3>Studio</h3>
+      ${luminous ? luminousStudio(nb, audio, ready) : `<section class="studio"><h3>Studio</h3>
         <button><mat-icon>note_add</mat-icon>Add note</button>
         <div class="audio-card"><h4>Audio Overview</h4>
           ${!audio ? `<button class="customize">Customize</button><button class="gen">Generate</button>`
             : ready ? `<audio controls src="data:audio/mp3;base64,"></audio><button><mat-icon>play_arrow</mat-icon>Play</button>`
             : `<p>Generating conversation… This may take a few minutes.</p>`}
         </div>
-      </section>`;
+      </section>`}`;
     const title = app.querySelector(".title-input");
     const commit = () => { const st = load(); st.notebooks.find((x) => x.id === id).title = title.value; save(st); };
     title.addEventListener("keydown", (e) => e.key === "Enter" && commit());
@@ -171,6 +177,23 @@
       save(st); closeDialogs(); renderNotebook(false);
       setTimeout(() => nbIdFromPath() === id && renderNotebook(false), 3200);
     };
+    if (luminous) {
+      // Tuile grisée ~1,5 s après l'ajout d'une source (indexation), comme sur l'app réelle
+      const tile = app.querySelector("[aria-label='Résumé audio']");
+      const wait = 1500 - (Date.now() - (nb.lastSourceAt || 0));
+      if (wait > 0) {
+        tile.classList.add("disabled-tile");
+        setTimeout(() => tile.isConnected && tile.classList.remove("disabled-tile"), wait);
+      }
+      tile.onclick = () => { if (!tile.classList.contains("disabled-tile")) openLuminousCustomize(startAudio); };
+      const open = app.querySelector("artifact-library-item .artifact-stretched-button");
+      if (open && ready) open.onclick = () => { app.querySelector(".panel-bottom-audio-player").innerHTML = playerHtml(); bindPlayer(); };
+      const bindPlayer = () => {
+        const play = app.querySelector("audio-player [aria-label=\"Lire l'audio\"]");
+        if (play) play.onclick = () => { const st = load(); st.notebooks.find((x) => x.id === id).audio.played = true; save(st); };
+      };
+      bindPlayer();
+    }
     const cust = app.querySelector(".customize");
     if (cust) cust.onclick = () => {
       // Reproduit la modale réelle : formats (tuiles), durée (boutons), langue (<select>), consignes, « Generate ».
@@ -192,6 +215,58 @@
     // Génération côté « serveur » : l'audio devient prêt même si l'onglet a été rechargé entre-temps
     if (audio && !ready) setTimeout(() => nbIdFromPath() === id && renderNotebook(false), 3100 - (Date.now() - audio.startedAt));
     if (fresh) openAddSource(id);
+  }
+
+  // ─── UI luminous (Gemini Notebook) ───────────────────────────────────────
+  const TILES = [["Résumé audio", "audio_spark", "blue"], ["Présentation", "slideshow", "pink"], ["Résumé vidéo", "video_spark", "green"], ["Carte mentale", "flowchart", "purple"], ["Rapports", "auto_tab_group", "orange"]];
+  function playerHtml() {
+    return `<audio-player><div class="audio-player-container"><div class="audio-controls">
+      <button aria-label="Bonne discussion"><mat-icon>thumb_up</mat-icon></button>
+      <button aria-label="Afficher plus d'options pour le lecteur audio"><mat-icon>more_vert</mat-icon></button>
+      <button aria-label="Lire l'audio"><mat-icon>play_arrow</mat-icon></button></div></div></audio-player>`;
+  }
+  function openLuminousCustomize(startAudio) {
+    const formats = [["deep_dive", "Analyse approfondie", "Une conversation animée entre deux hôtes"], ["brief", "Briefing", "Un aperçu condensé"], ["critique", "Critique", "Un examen d'expert de vos sources"], ["debate", "Débat", "Un débat réfléchi entre deux hôtes"]];
+    const d = dialog(`<h2><mat-icon>audio_spark</mat-icon>Personnaliser le résumé audio</h2>
+      <button aria-label="Fermer"><mat-icon>close</mat-icon></button>
+      <div class="formats">${formats.map(([k, t, desc]) => `<div class="format-card" data-format="${k}"><div class="format-title"><span>${t}</span>${k === "deep_dive" ? "<mat-icon>check</mat-icon>" : ""}</div><div class="format-desc">${desc}</div></div>`).join("")}</div>
+      <div>Sélectionnez une langue <mat-select role="combobox" aria-label="Sélectionnez une langue" tabindex="0"><span class="val">français</span></mat-select></div>
+      <div>Longueur <mat-button-toggle-group>${[["short", "Court"], ["default", "Par défaut"]].map(([k, l]) => `<mat-button-toggle><button data-length="${k}"><mat-icon>check</mat-icon>${l}</button></mat-button-toggle>`).join("")}</mat-button-toggle-group></div>
+      <button class="src-picker">2 sources <mat-icon>expand_more</mat-icon></button>
+      <textarea aria-label="Sur quoi les hôtes IA devraient-ils se concentrer dans cet épisode ?"></textarea>
+      <button class="chip">+ Priorités critiques</button><button class="chip">+ Roadmap technique</button>
+      <button class="go">Générer</button>`);
+    let format = "deep_dive", length = "default", language = "fr";
+    d.querySelectorAll(".format-card").forEach((c) => (c.onclick = () => (format = c.dataset.format)));
+    d.querySelectorAll("[data-length]").forEach((b) => (b.onclick = () => (length = b.dataset.length)));
+    d.querySelectorAll(".chip").forEach((b) => (b.onclick = () => { d.querySelector("textarea").value += b.textContent; format = "CHIP_CLICKED"; }));
+    d.querySelector("mat-select").onclick = () => {
+      const panel = el(`<div class="cdk-overlay-pane" role="listbox">${[["en", "English"], ["fr", "français"], ["it", "italiano"]].map(([v, l]) => `<mat-option role="option" data-v="${v}">${l}</mat-option>`).join("")}</div>`);
+      overlay.appendChild(panel);
+      panel.querySelectorAll("mat-option").forEach((o) => (o.onclick = () => { language = o.dataset.v; d.querySelector(".val").textContent = o.textContent; panel.remove(); }));
+    };
+    d.querySelector(".go").onclick = () => startAudio(d.querySelector("textarea").value, { via: "tile", format, length, language });
+  }
+
+  function luminousStudio(nb, audio, ready) {
+    const item = !audio ? "" : ready
+      ? `<artifact-library-item data-studio-accent="blue"><div class="artifact-item-button"><div class="artifact-button-content">
+           <button type="button" class="artifact-stretched-button" aria-description="résumé audio" aria-labelledby="lbl"></button>
+           <div aria-hidden="true" class="artifact-primary-content"><mat-icon class="artifact-icon google-symbols">audio_spark</mat-icon>
+           <span class="artifact-labels" id="lbl"><span class="artifact-title">${nb.title}</span><span class="artifact-details">17:40 · Analyse approfondie · ${nb.sources.length} sources · Il y a 1 min</span></span></div>
+           <div class="artifact-actions"><button aria-label="Plus"><mat-icon>more_vert</mat-icon></button></div></div></div></artifact-library-item>`
+      : `<artifact-library-item data-studio-accent="blue"><div class="artifact-item-button"><div class="artifact-button-content">
+           <button type="button" class="artifact-stretched-button" aria-description="résumé audio"></button>
+           <div aria-hidden="true" class="artifact-primary-content"><mat-icon class="artifact-icon google-symbols rotate">sync</mat-icon>
+           <span class="artifact-labels"><span class="artifact-title shimmer-blue">Génération du résumé audio…</span><span class="artifact-details">Revenez dans quelques minutes</span></span></div>
+           </div></div></artifact-library-item>`;
+    return `<studio-panel><div class="panel-content-scrollable">
+      <div class="create-artifact-buttons-container">${TILES.map(([l, i, c]) => `<basic-create-artifact-button>
+        <div role="button" tabindex="0" class="create-artifact-button-container ${c}${l === "Résumé audio" && audio && !ready ? " create-artifact-button-creating" : ""}" aria-label="${l}">
+          <span class="default-container"><span class="icon-container"><mat-icon aria-hidden="true">${i}</mat-icon><span class="create-label-container"> ${l} </span></span>
+          <div class="option-icon" style="display:none"><mat-icon aria-hidden="true">chevron_forward</mat-icon></div></span></div></basic-create-artifact-button>`).join("")}</div>
+      <div class="artifact-library-container"><artifact-library class="luminous-ui"><div class="artifact-library-ungrouped-items">${item}</div></artifact-library></div>
+      </div><div class="panel-bottom-audio-player"></div></studio-panel>`;
   }
 
   const route = () => (nbIdFromPath() ? renderNotebook(false) : renderHome());

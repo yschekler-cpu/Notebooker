@@ -17,11 +17,11 @@ export const LABELS = {
   audioCustomize: ["customize", "personnaliser"],
   audioGenerate: ["generate", "générer"],
   audioOverview: ["audio overview", "résumé audio", "aperçu audio"],
-  audioPlay: ["play", "lire", "lecture", "charger l'audio", "load audio"],
+  audioPlay: ["play", "lire", "lecture", "lire l'audio", "play audio", "charger l'audio", "load audio"],
   audioGenerating: ["generating", "génération en cours", "generation en cours", "génération"],
   audioFormat: {
     deep_dive: ["deep dive", "analyse approfondie", "approfondi", "en profondeur"],
-    brief: ["brief", "bref", "résumé", "resume", "synthèse"],
+    brief: ["briefing", "brief", "bref", "résumé", "resume", "synthèse"],
     critique: ["critique", "critic", "avis critique"],
     debate: ["debate", "débat", "debat"],
   },
@@ -42,6 +42,22 @@ export const SELECTORS = {
   notebookCard: ["project-button", "mat-card", "[role='listitem']", "li", "tr"],
   dialog: "[role='dialog'], mat-dialog-container, .cdk-overlay-pane",
   titleInput: "input.title-input, input[aria-label*='title' i], input[aria-label*='titre' i]",
+  /**
+   * UI « luminous » (Gemini Notebook, notebook.google.com, 2026) : tuiles Studio et bibliothèque d'artefacts.
+   * Plus de carte « Audio Overview » avec boutons Personnaliser/Générer : une tuile cliquable
+   * « Résumé audio » (icône `audio_spark`) et une liste d'artefacts générés.
+   */
+  studioTile: "basic-create-artifact-button [role='button'], .create-artifact-button-container",
+  studioTileCreating: "create-artifact-button-creating",
+  studioTileDisabled: "disabled-tile",
+  studioTileOptions: ".option-icon",
+  artifactItem: "artifact-library-item",
+  artifactButton: "button.artifact-stretched-button",
+  artifactGenerating: "[class*='shimmer'], .rotate, .stop-generation-button, .artifact-library-shimmer",
+  artifactFailed: ".artifact-item-button-failed, .artifact-item-button-cancelled, .artifact-failed",
+  audioPlayer: "audio-player, audio, [class*='audio-player']",
+  /** Ligature d'icône identifiant le résumé audio (tuile + artefact). */
+  audioIcon: "audio_spark",
 };
 
 /** UUID strict (évite de capturer le « - » de `project-<uuid>`). */
@@ -101,7 +117,7 @@ export function findClickable(
   opts: { exclude?: (el: HTMLElement) => boolean; exactOnly?: boolean } = {},
 ): HTMLElement | null {
   const candidates = Array.from(
-    root.querySelectorAll<HTMLElement>("button, [role='button'], [role='tab'], [role='menuitem'], [role='option'], a, mat-chip, mat-chip-option, label"),
+    root.querySelectorAll<HTMLElement>("button, [role='button'], [role='tab'], [role='menuitem'], [role='option'], [role='radio'], mat-radio-button, a, mat-chip, mat-chip-option, label"),
   ).filter((el) => isVisible(el) && !(el as HTMLButtonElement).disabled && !el.closest(".notebooker-badge") && !opts.exclude?.(el));
   const wanted = labels.map(norm);
   const score = (el: HTMLElement): number => {

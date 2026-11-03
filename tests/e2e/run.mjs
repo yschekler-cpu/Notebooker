@@ -536,6 +536,46 @@ try {
     });
   });
 
+  await test("driver (UI luminous Gemini Notebook) : tuile « Résumé audio » → modale personnalisée → generating → ready → lecture", async () => {
+    await home.goto(`${NLM}/`);
+    await home.evaluate(() => {
+      localStorage.setItem("mockNlmUi", "luminous");
+      const st = JSON.parse(localStorage.getItem("mockNlm"));
+      const nb = st.notebooks.find((n) => n.title === "Veille ELTIF");
+      nb.audio = null;
+      nb.sources = [{ kind: "text", value: "x", title: "ELTIF 2.0" }];
+      nb.lastSourceAt = Date.now(); // tuile grisée (indexation) → le driver doit attendre
+      localStorage.setItem("mockNlm", JSON.stringify(st));
+    });
+    const id = "99999999-8888-7777-6666-555555555555";
+    try {
+      await home.goto(`${NLM}/notebook/${id}`);
+      await home.waitForSelector("[aria-label='Résumé audio']");
+      const drv = (cmd) =>
+        sw.evaluate(async (c) => {
+          const [t] = await chrome.tabs.query({ url: "http://127.0.0.1/notebook/*" });
+          return chrome.tabs.sendMessage(t.id, { __driver: c });
+        }, cmd);
+      assert.equal((await drv({ cmd: "audioStatus" })).data, "none");
+      const g = await drv({ cmd: "generateAudio", audio: { format: "critique", length: "short", language: "it", instructions: "Focus KYC." } });
+      assert.ok(g.ok, g.error);
+      assert.deepEqual(g.data.missing, [], `tous les réglages appliqués : ${JSON.stringify(g.data)}`);
+      const nb = (await mockState(home)).notebooks.find((n) => n.id === id);
+      assert.equal(nb.audio?.via, "tile", "génération lancée via la modale de la tuile");
+      assert.equal(nb.audio.format, "critique", "carte de format (et non la chip « + Priorités critiques »)");
+      assert.equal(nb.audio.length, "short");
+      assert.equal(nb.audio.language, "it");
+      assert.match(nb.audio.instructions, /Focus KYC/);
+      assert.equal((await drv({ cmd: "audioStatus" })).data, "generating");
+      await waitFor(async () => (await drv({ cmd: "audioStatus" }))?.data === "ready", 10_000, 500);
+      const p = await drv({ cmd: "playAudio" });
+      assert.equal(p.data, "playing", JSON.stringify(p));
+      assert.ok((await mockState(home)).notebooks.find((n) => n.id === id).audio.played, "bouton « Lire l'audio » cliqué");
+    } finally {
+      await home.evaluate(() => localStorage.removeItem("mockNlmUi"));
+    }
+  });
+
   await test("driver : suppression d'un notebook (menu ⋮ → Delete → confirmation)", async () => {
     await home.goto(`${NLM}/`);
     await home.waitForSelector("project-button");

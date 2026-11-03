@@ -7,6 +7,7 @@ import {
   fill,
   findClickable,
   isInsideNotebookCard,
+  isVisible,
   labelText,
   norm,
   notebookIdFromUrl,
@@ -176,10 +177,18 @@ async function chooseLanguage(dlg: HTMLElement, code: string): Promise<boolean> 
 }
 
 async function generateAudio(audio: AudioOptions): Promise<AudioReport> {
-  const report: AudioReport = { applied: [], missing: [] };
-  const card = await waitFor(() => audioCard(), 20_000).catch(() => {
-    throw new Error("Carte « Audio Overview » introuvable dans le panneau Studio.");
+  const target = await waitFor(() => {
+    const tile = audioTile();
+    if (tile) return { kind: "tile" as const, el: tile };
+    const card = audioCard();
+    return card ? { kind: "card" as const, el: card } : null;
+  }, 20_000).catch(() => {
+    throw new Error("Tuile « Résumé audio » / carte « Audio Overview » introuvable dans le panneau Studio.");
   });
+  if (target.kind === "tile") return generateAudioFromTile(target.el, audio);
+
+  const report: AudioReport = { applied: [], missing: [] };
+  const card = target.el;
   const customize = findClickable(LABELS.audioCustomize, card);
   if (!customize) {
     // Fallback : « Générer » direct, sans personnalisation
@@ -189,9 +198,56 @@ async function generateAudio(audio: AudioOptions): Promise<AudioReport> {
   }
   customize.click();
   const dlg = await waitFor(() => topDialog(), 8000);
+  await customizeAndGenerate(dlg, audio, report);
+  return report;
+}
 
+/**
+ * UI luminous (Gemini Notebook) : la tuile « Résumé audio » lance la génération soit directement,
+ * soit via une modale de personnalisation (chevron `.option-icon`, masqué en luminous-ui).
+ * On ne déclare le lancement réussi QUE sur un signal observable (modale validée, tuile en
+ * `create-artifact-button-creating`, nouvel artefact audio) — sinon erreur explicite.
+ */
+async function generateAudioFromTile(tile: HTMLElement, audio: AudioOptions): Promise<AudioReport> {
+  const report: AudioReport = { applied: [], missing: [] };
+  // Tuile grisée tant que les sources sont en cours d'indexation.
+  await waitFor(() => !tile.classList.contains(SELECTORS.studioTileDisabled) && tile.getAttribute("aria-disabled") !== "true", 90_000).catch(() => {
+    throw new Error("Tuile « Résumé audio » désactivée (sources encore en traitement ?).");
+  });
+  const before = audioArtifacts().length;
+  const started = () =>
+    tile.classList.contains(SELECTORS.studioTileCreating) ||
+    !!tile.querySelector(`.${SELECTORS.studioTileCreating}`) ||
+    audioArtifacts().length > before;
+
+  const options = tile.querySelector<HTMLElement>(SELECTORS.studioTileOptions);
+  const trigger = options && isVisible(options) ? options : tile;
+  tile.scrollIntoView({ block: "center" });
+  trigger.click();
+
+  const outcome = await waitFor(() => {
+    const dlg = topDialog();
+    if (dlg && findClickable(LABELS.audioGenerate, dlg)) return { dlg };
+    return started() ? { dlg: null } : null;
+  }, 10_000).catch(() => {
+    throw new Error("Clic sur « Résumé audio » sans effet (ni modale, ni génération détectée).");
+  });
+
+  if (outcome.dlg) {
+    await customizeAndGenerate(outcome.dlg, audio, report);
+  } else {
+    report.missing.push("personnalisation (format, durée, langue, consignes) — Gemini Notebook a lancé la génération directement depuis la tuile");
+  }
+  await waitFor(() => started() || audioArtifacts().some((a) => artifactState(a) === "generating"), 30_000).catch(() => {
+    throw new Error("Génération audio non confirmée (aucun artefact « Résumé audio » en cours).");
+  });
+  return report;
+}
+
+/** Applique format / durée / langue / consignes dans la modale de personnalisation puis clique « Générer ». */
+async function customizeAndGenerate(dlg: HTMLElement, audio: AudioOptions, report: AudioReport): Promise<void> {
   // Chaque réglage est indépendant : un libellé introuvable n'empêche pas la génération.
-  const format = findClickable(LABELS.audioFormat[audio.format], dlg, { exactOnly: true }) ?? findClickable(LABELS.audioFormat[audio.format], dlg);
+  const format = findOptionByTitle(LABELS.audioFormat[audio.format], dlg);
   if (format) {
     format.click();
     report.applied.push(`format ${audio.format}`);
@@ -218,12 +274,66 @@ async function generateAudio(audio: AudioOptions): Promise<AudioReport> {
   } else if (text) report.missing.push("champ de consignes");
 
   await click(LABELS.audioGenerate, dlg);
-  return report;
 }
 
-/** Lance la lecture du podcast (bouton Lecture de la carte Audio Overview, sinon l'élément <audio>). */
+/**
+ * Option de la modale de personnalisation. Gemini Notebook rend les formats comme des cartes
+ * « Titre + description » (pas forcément role=button) : on cherche d'abord un contrôle cliquable
+ * dont le libellé correspond exactement, puis le TITRE exact de la carte (le clic remonte au
+ * gestionnaire de la carte), puis un préfixe. Les chips de suggestion « + Priorités critiques »
+ * sont exclues (sinon « critique » cliquerait la chip au lieu du format).
+ */
+function findOptionByTitle(labels: string[], dlg: HTMLElement): HTMLElement | null {
+  const isChip = (el: HTMLElement) => labelText(el).startsWith("+");
+  const exact = findClickable(labels, dlg, { exactOnly: true, exclude: isChip });
+  if (exact) return exact;
+  const wanted = labels.map(norm);
+  const leaves = Array.from(dlg.querySelectorAll<HTMLElement>("span, div, p, h1, h2, h3, h4, label, strong"))
+    .filter((e) => isVisible(e) && !e.closest("textarea") && !isChip(e));
+  for (const w of wanted) {
+    const hit = leaves.find((e) => labelText(e) === w);
+    if (hit) return hit;
+  }
+  return findClickable(labels, dlg, { exclude: isChip });
+}
+
+// ─── UI luminous : tuile Studio + bibliothèque d'artefacts ────────────────────
+
+function isAudioLabelled(el: Element): boolean {
+  const wanted = LABELS.audioOverview.map(norm);
+  const texts = [el.getAttribute("aria-label"), el.getAttribute("aria-description"), labelText(el)].map(norm).filter(Boolean);
+  return texts.some((t) => wanted.some((w) => t === w || t.startsWith(`${w} `)));
+}
+
+function hasAudioIcon(el: Element): boolean {
+  return Array.from(el.querySelectorAll("mat-icon, .google-symbols, .material-symbols-outlined")).some((i) => norm(i.textContent) === SELECTORS.audioIcon);
+}
+
+/** Tuile « Résumé audio » du panneau Studio (luminous-ui). Pas de filtre de visibilité : le panneau peut être replié. */
+function audioTile(): HTMLElement | null {
+  const tiles = Array.from(document.querySelectorAll<HTMLElement>(SELECTORS.studioTile)).filter((t) => !t.closest(SELECTORS.artifactItem));
+  return tiles.find((t) => isAudioLabelled(t)) ?? tiles.find((t) => hasAudioIcon(t)) ?? null;
+}
+
+/** Artefacts « Résumé audio » de la bibliothèque Studio (luminous-ui). */
+function audioArtifacts(): HTMLElement[] {
+  return Array.from(document.querySelectorAll<HTMLElement>(SELECTORS.artifactItem)).filter((item) => {
+    const btn = item.querySelector(SELECTORS.artifactButton);
+    return (btn && isAudioLabelled(btn)) || hasAudioIcon(item);
+  });
+}
+
+function artifactState(item: HTMLElement): "ready" | "generating" | "failed" {
+  if (item.matches(SELECTORS.artifactFailed) || item.querySelector(SELECTORS.artifactFailed)) return "failed";
+  if (item.querySelector(SELECTORS.artifactGenerating) || isGeneratingText(labelText(item))) return "generating";
+  return "ready";
+}
+
+/** Lance la lecture du podcast (lecteur luminous, sinon bouton Lecture de la carte Audio Overview, sinon <audio>). */
 async function playAudio(): Promise<"playing" | "not_ready"> {
-  const card = await waitFor(() => audioCard(), 20_000).catch(() => null);
+  await waitFor(() => audioTile() || audioCard(), 20_000).catch(() => null);
+  if (audioTile()) return playLuminous();
+  const card = audioCard();
   if (!card) return "not_ready";
   const btn = findClickable(LABELS.audioPlay, card, { exactOnly: true });
   if (btn) {
@@ -240,7 +350,31 @@ async function playAudio(): Promise<"playing" | "not_ready"> {
   return "playing";
 }
 
+async function playLuminous(): Promise<"playing" | "not_ready"> {
+  const ready = audioArtifacts().find((a) => artifactState(a) === "ready");
+  if (!ready) return "not_ready";
+  const playBtn = () => {
+    const player = document.querySelector<HTMLElement>(SELECTORS.audioPlayer);
+    return player ? findClickable(LABELS.audioPlay, player, { exactOnly: true }) : null;
+  };
+  if (!playBtn()) {
+    // Ouvre l'artefact : charge le lecteur audio en bas du panneau Studio
+    ready.querySelector<HTMLElement>(SELECTORS.artifactButton)?.click();
+  }
+  const btn = await waitFor(() => playBtn(), 10_000).catch(() => null);
+  if (!btn) return "not_ready";
+  btn.click();
+  return "playing";
+}
+
 export function audioStatus(): "ready" | "generating" | "none" {
+  const tile = audioTile();
+  if (tile) {
+    const states = audioArtifacts().map(artifactState);
+    if (states.includes("ready")) return "ready";
+    if (states.includes("generating") || tile.classList.contains(SELECTORS.studioTileCreating)) return "generating";
+    return "none";
+  }
   const card = audioCard();
   if (!card) return "none";
   if (card.querySelector("audio, audio-player, [class*='audio-player']")) return "ready";
