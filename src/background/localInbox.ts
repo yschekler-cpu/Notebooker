@@ -59,6 +59,8 @@ export interface InboxSourceRef {
 
 export interface InboxManifest {
   id: string;
+  /** Mode routine : identifiant de la demande envoyée par Notebooker (corrélation déclenchement ↔ résultat). */
+  requestId?: string;
   generatedAt: string;
   title?: string;
   topics: InboxTopic[];
@@ -181,7 +183,7 @@ export function parseManifest(json: string): InboxManifest {
     }
   }
 
-  return { id, generatedAt, title: str(data.title, 200) || undefined, topics, sources, audio, actions };
+  return { id, requestId: str(data.requestId, 120) || undefined, generatedAt, title: str(data.title, 200) || undefined, topics, sources, audio, actions };
 }
 
 // ─── Lecture ──────────────────────────────────────────────────────────────────

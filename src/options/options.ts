@@ -155,6 +155,11 @@ function fillProfile(p: BriefProfile): void {
   $<HTMLSelectElement>("p_mode").value = p.mode;
   $("p_manifest").value = p.localFolder.manifestFile;
   $("p_watch").checked = p.localFolder.watch;
+  $("p_r_url").value = p.routine.fireUrl;
+  $("p_r_token").value = p.routine.token;
+  $("p_r_page").value = p.routine.notionPage;
+  $<HTMLSelectElement>("p_r_ws").value = p.routine.workspace;
+  $("p_r_timeout").value = String(p.routine.timeoutMinutes);
   toggleProfileMode();
   $("p_actions").checked = p.extractActions;
   const next = nextRuns[p.id];
@@ -185,16 +190,24 @@ function readProfile(prev: BriefProfile): BriefProfile {
     synthesisFocus: $<HTMLTextAreaElement>("p_focus").value.trim(),
     memory: $("p_memory").checked,
     extractActions: $("p_actions").checked,
-    mode: $<HTMLSelectElement>("p_mode").value === "localFolder" ? "localFolder" : "connectors",
+    mode: (["localFolder", "routine"] as const).find((m) => m === $<HTMLSelectElement>("p_mode").value) ?? "connectors",
+    routine: {
+      fireUrl: $("p_r_url").value.trim(),
+      token: $("p_r_token").value.trim(),
+      notionPage: $("p_r_page").value.trim(),
+      workspace: $<HTMLSelectElement>("p_r_ws").value === "personal" ? "personal" : "company",
+      timeoutMinutes: Number($("p_r_timeout").value) || 20,
+    },
     localFolder: { manifestFile: $("p_manifest").value.trim() || "latest.json", watch: $("p_watch").checked },
   });
 }
 
 /** Mode « dossier local » : masque les sources connecteurs, affiche les réglages du dossier. */
 function toggleProfileMode(): void {
-  const local = $<HTMLSelectElement>("p_mode").value === "localFolder";
-  document.querySelectorAll<HTMLElement>(".conn-only").forEach((el) => (el.hidden = local));
-  document.querySelectorAll<HTMLElement>(".local-only").forEach((el) => (el.hidden = !local));
+  const mode = $<HTMLSelectElement>("p_mode").value;
+  document.querySelectorAll<HTMLElement>(".conn-only").forEach((el) => (el.hidden = mode !== "connectors"));
+  document.querySelectorAll<HTMLElement>(".local-only").forEach((el) => (el.hidden = mode !== "localFolder"));
+  document.querySelectorAll<HTMLElement>(".routine-only").forEach((el) => (el.hidden = mode !== "routine"));
 }
 
 function renderProfileSelect(s: Settings): void {
@@ -501,6 +514,28 @@ async function init(): Promise<void> {
     $<HTMLTextAreaElement>("li_context").value = OPALE_NOTION_CONTEXT;
     say("Contexte Opale rétabli — pense à enregistrer.");
   };
+  $("p_r_prompt").onclick = async () => {
+    settings = read(settings);
+    const p = settings.profiles.find((x) => x.id === currentProfileId)!;
+    if (!p.routine.notionPage) return say("Renseigne d'abord la page Notion de dépôt.", "warn");
+    const prompt = buildCoworkPrompt({
+      folder: "",
+      manifestFile: "latest.json",
+      profileName: p.name,
+      lookbackHours: p.lookbackHours,
+      exclusions: settings.compliance.gmailExclusions,
+      focus: p.synthesisFocus,
+      notionContext: settings.localInbox.coworkContext,
+      githubRepos: settings.localInbox.githubRepos,
+      target: { kind: "notion", pageUrl: p.routine.notionPage },
+    });
+    try {
+      await navigator.clipboard.writeText(prompt);
+      say(`Prompt de la routine copié pour « ${p.name} » — colle-le dans la routine Claude Code.`, "ok");
+    } catch {
+      say("Copie impossible — réessaie depuis une page au premier plan.", "warn");
+    }
+  };
   $("li_prompt").onclick = async () => {
     settings = read(settings);
     const p = settings.profiles.find((x) => x.id === currentProfileId)!;
@@ -572,6 +607,7 @@ async function init(): Promise<void> {
         : t === "gmail" ? { type: "testGmail" }
         : t === "calendar" ? { type: "testCalendar" }
         : t === "backlog" ? { type: "inspectBacklog" }
+        : t === "routine-inbox" ? { type: "inspectRoutineInbox", profileId: currentProfileId }
         : t === "inbox" ? { type: "inspectInbox", profileId: settings.profiles.find((p) => p.id === currentProfileId && p.mode === "localFolder")?.id }
         : { type: "testClaude" };
       say("Test en cours…");

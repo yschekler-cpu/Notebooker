@@ -96,7 +96,7 @@ export interface AudioOptions {
   instructions: string;
 }
 
-export type CollectionMode = "connectors" | "localFolder";
+export type CollectionMode = "connectors" | "localFolder" | "routine";
 
 export interface BriefProfile {
   id: string;
@@ -108,6 +108,21 @@ export interface BriefProfile {
    * lit le dossier, calcule le diff jour après jour et génère le podcast. Aucun connecteur requis.
    */
   mode: CollectionMode;
+  /**
+   * « routine » : Notebooker déclenche une routine Claude Code (API fire), attend qu'elle dépose
+   * le manifest dans une page Notion de dépôt, puis génère le podcast.
+   */
+  routine: {
+    /** URL d'API fournie par Claude Code (…/v1/claude_code/routines/trig_…/fire). */
+    fireUrl: string;
+    /** Jeton propre à cette routine (sk-ant-oat01-…) : déclenchement uniquement, aucun accès en lecture. */
+    token: string;
+    /** Page Notion où la routine dépose le manifest (bloc de code JSON). */
+    notionPage: string;
+    workspace: NotionWorkspaceKey;
+    /** Délai maximal d'attente du résultat (minutes). */
+    timeoutMinutes: number;
+  };
   localFolder: {
     /** Manifest du profil dans le dossier (ex. latest.json, conformite.json). */
     manifestFile: string;
@@ -199,7 +214,8 @@ export interface BriefingRun {
   profileName: string;
   startedAt: string;
   finishedAt: string | null;
-  status: "running" | "success" | "partial" | "error";
+  /** « waiting » : routine Claude déclenchée, en attente de son résultat. */
+  status: "running" | "waiting" | "success" | "partial" | "error";
   notebookId: string | null;
   sourcesCount: number;
   steps: { at: string; message: string; level: "info" | "warn" | "error" }[];

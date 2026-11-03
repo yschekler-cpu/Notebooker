@@ -2,7 +2,8 @@ import type { BackgroundRequest, NotebookSummary } from "../shared/messages";
 import { nextRun, shouldCatchUp } from "../shared/schedule";
 import { getSettings, mutateSubscriptions, uid } from "../shared/storage";
 import type { Subscription, Target } from "../shared/types";
-import { getLastPodcast, lastSuccessfulRun, notify, onAudioAlarm, processedIds, runBriefing } from "./briefing";
+import { getLastPodcast, getRoutinePending, lastSuccessfulRun, notify, onAudioAlarm, onRoutineAlarm, processedIds, routineAlarm, runBriefing } from "./briefing";
+import { readRoutineManifest } from "./routine";
 import { fileAccessAllowed, readInbox, readManifest } from "./localInbox";
 import { dismissActions, inspectBacklog, pushActions } from "./actions";
 import { calendarWindow, fetchEvents } from "./calendar";
@@ -32,6 +33,11 @@ async function bootstrap(checkCatchUp = false): Promise<void> {
   await chrome.alarms.clear("briefing"); // alarme unique de la v0.1
   await scheduleBriefings();
   await rebuildContextMenus();
+  // Attentes de routine en cours (alarmes perdues au redémarrage de Chrome) : réarmées
+  const st = await getSettings();
+  for (const p of st.profiles) {
+    if (await getRoutinePending(p.id)) await chrome.alarms.create(routineAlarm(p.id), { delayInMinutes: 0.5, periodInMinutes: 0.5 });
+  }
   if (checkCatchUp) {
     const s = await getSettings();
     for (const p of s.profiles) {
@@ -99,6 +105,8 @@ chrome.alarms.onAlarm.addListener((alarm) => {
     const id = alarm.name.slice(ALARM_BRIEFING_PREFIX.length);
     // Replanifie AVANT d'exécuter : un run bloqué ou un SW tué ne doit pas supprimer le créneau suivant.
     void scheduleBriefing(id).then(() => runBriefing(id, { interactive: false }));
+  } else if (alarm.name.startsWith("routine:")) {
+    void onRoutineAlarm(alarm.name.slice("routine:".length));
   } else if (alarm.name === ALARM_INBOX) {
     void checkInbox();
   } else if (alarm.name === ALARM_SYNC) {
@@ -292,6 +300,16 @@ async function handle(req: BackgroundRequest): Promise<unknown> {
       const next = await scheduleBriefings();
       await rebuildContextMenus();
       return next;
+    }
+    case "routineCheckNow":
+      return onRoutineAlarm(req.profileId);
+    case "inspectRoutineInbox": {
+      const s = await getSettings();
+      const p = s.profiles.find((x) => x.id === req.profileId && x.mode === "routine");
+      if (!p) throw new Error("Profil non configuré en mode « Routine Claude ».");
+      const m = await readRoutineManifest(s, p);
+      if (!m) return "Page de dépôt lisible — aucun manifest déposé pour l'instant.";
+      return `Page de dépôt lisible — dernier manifest « ${m.id} » du ${new Date(m.generatedAt).toLocaleString("fr-FR")} (${m.topics.length} sujet(s))${m.requestId ? `, requestId ${m.requestId}` : ""}`;
     }
     case "checkInboxNow":
       return checkInbox();

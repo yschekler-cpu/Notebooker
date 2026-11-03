@@ -142,6 +142,27 @@ Claude Cowork (7 h 00, planifié)          Notebooker (surveillance toutes les 1
 
 **Conformité** : les fichiers du brief sont stockés en clair sur le poste — disque chiffré obligatoire (FileVault / BitLocker), dossier hors synchronisation cloud personnelle ; le prompt impose la pseudonymisation des investisseurs, l'absence d'IBAN / données KYC et la purge à 14 jours. L'extension ne lit que des `.md` / `.txt` à l'intérieur du dossier (chemins relatifs, pas de `..`).
 
+## Mode « Routine Claude (API) »
+
+Variante cloud du mode Cowork : Notebooker **déclenche lui-même** une routine Claude Code par son API officielle, attend son résultat, puis génère le podcast.
+
+```
+Notebooker (heure du profil ou « Lancer »)
+  POST https://api.anthropic.com/v1/claude_code/routines/trig_…/fire   (jeton de la routine, text = requestId)
+     → réponse immédiate : id + URL de session (pas le résultat)
+Routine Claude Code (cloud) : Gmail · Agenda · Notion · GitHub
+     → dépose le manifest (bloc de code JSON, requestId recopié) dans une page Notion de dépôt
+Notebooker interroge la page toutes les 30 s (alarmes, résiste à l'arrêt du service worker)
+     → manifest avec SON requestId → diff → notebook + podcast (même traitement que le dossier local)
+```
+
+| Point | Détail |
+|---|---|
+| Pourquoi une page Notion | L'API des routines ne renvoie que l'id de session et son jeton n'a aucun accès en lecture ; la routine tourne dans le cloud et ne peut pas écrire sur le poste. La page Notion de dépôt reste dans l'espace Opale, déjà lisible par Notebooker (jeton d'API ou OAuth). |
+| Sécurité du jeton | Jeton propre à la routine (`sk-ant-oat01-…`, déclenchement uniquement), stocké localement ; **envoyé uniquement à `api.anthropic.com`** (URL validée : schéma, hôte et chemin `…/routines/trig_…/fire`). |
+| Fiabilité | Un ancien brief resté dans la page est ignoré (corrélation par `requestId`) ; un seul déclenchement en attente par profil (pas de session en double) ; délai maximal configurable → alerte avec le lien de la session. Limites Anthropic : 30 déclenchements / h par routine. |
+| Mise en place | Page Notion vide dédiée (connectée à Notebooker et accessible à la routine) → Réglages › Profils › modèle « Brief routine Claude (API) » → **Copier le prompt de la routine** → créer la routine dans Claude Code avec ce prompt, ajouter un déclencheur **API**, générer le jeton → coller URL + jeton dans le profil. |
+
 ## Pipeline d'un profil de brief
 
 | Étape | Détail | En cas d'échec |
@@ -196,6 +217,7 @@ Claude Cowork (7 h 00, planifié)          Notebooker (surveillance toutes les 1
 - [ ] « Google Doc vivant » par abonnement (une source unique synchronisée nativement par NotebookLM)
 - [ ] Auto-test quotidien du driver · pré-contrôle des quotas NotebookLM
 - [x] Mode « Dossier local » alimenté par Claude Cowork, diff quotidien, lecture du dernier podcast
+- [x] Mode « Routine Claude (API) » : déclenchement par l'API officielle, dépôt dans une page Notion, attente robuste
 - [ ] Slack dans le brief
 - [x] Drag & drop des cartes vers les dossiers
 - [x] Export / import de l'organisation (JSON)

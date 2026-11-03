@@ -28,6 +28,9 @@ export type BackgroundRequest =
   | { type: "testCalendar" }
   /** Dossier local (Claude Cowork) */
   | { type: "checkInboxNow" }
+  /** Routine Claude (API) */
+  | { type: "routineCheckNow"; profileId: string }
+  | { type: "inspectRoutineInbox"; profileId: string }
   | { type: "inspectInbox"; profileId?: string }
   | { type: "fileAccessStatus" }
   /** Dernier podcast généré */

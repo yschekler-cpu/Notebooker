@@ -16,3 +16,5 @@ export const CALENDAR_API = E2E ? `${E2E}/calendar/v3` : "https://www.googleapis
 export const E2E_GOOGLE_TOKEN: string | null = E2E ? "e2e-google-token" : null;
 /** Page d'autorisation Notion (OAuth). */
 export const NOTION_OAUTH_AUTHORIZE = E2E ? `${E2E}/notion/v1/oauth/authorize` : "https://api.notion.com/v1/oauth/authorize";
+/** Base du serveur de mock (build E2E uniquement ; vide en production). */
+export const E2E_BASE_URL: string = E2E;

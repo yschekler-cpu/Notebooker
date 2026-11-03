@@ -132,6 +132,24 @@ export class NotionClient {
     return toLite(await this.call(`/pages/${clean(pageId)}`));
   }
 
+  /** Blocs de code de premier niveau d'une page (texte brut, langage). */
+  async codeBlocks(pageId: string): Promise<{ language: string; text: string }[]> {
+    const out: { language: string; text: string }[] = [];
+    let cursor: string | undefined;
+    do {
+      const qs = new URLSearchParams({ page_size: "100" });
+      if (cursor) qs.set("start_cursor", cursor);
+      const r = await this.call<{ results: Json[]; has_more: boolean; next_cursor: string | null }>(`/blocks/${clean(pageId)}/children?${qs}`);
+      for (const b of r.results) {
+        if (b.type !== "code") continue;
+        const code = b.code as { language?: string; rich_text?: { plain_text?: string }[] };
+        out.push({ language: String(code.language ?? ""), text: (code.rich_text ?? []).map((t) => t.plain_text ?? "").join("") });
+      }
+      cursor = r.has_more ? (r.next_cursor ?? undefined) : undefined;
+    } while (cursor);
+    return out;
+  }
+
   /** Contenu d'une page en Markdown (récursif, profondeur bornée). */
   async pageMarkdown(pageId: string, maxDepth = 3): Promise<string> {
     return (await this.blocksToMarkdown(clean(pageId), 0, maxDepth)).trim();

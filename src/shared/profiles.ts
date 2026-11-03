@@ -22,6 +22,7 @@ export function defaultProfile(id = "daily", name = "Brief du matin"): BriefProf
     enabled: false,
     mode: "connectors",
     localFolder: { manifestFile: "latest.json", watch: true },
+    routine: { fireUrl: "", token: "", notionPage: "", workspace: "company", timeoutMinutes: 20 },
     schedule: { time: "07:30", days: [...WEEKDAYS] },
     lookbackHours: 24,
     sources: { gmail: true, calendar: true, notionPersonal: true, notionCompany: true },
@@ -38,6 +39,16 @@ export function defaultProfile(id = "daily", name = "Brief du matin"): BriefProf
 
 /** Modèles prêts à l'emploi proposés à la création d'un profil. */
 export const PROFILE_TEMPLATES: Record<string, () => Omit<BriefProfile, "id">> = {
+  routine: () => {
+    const { id: _id, ...p } = defaultProfile("x", "Brief routine Claude (API)");
+    return {
+      ...p,
+      mode: "routine",
+      sources: { gmail: false, calendar: false, notionPersonal: false, notionCompany: false },
+      memory: true,
+      extractActions: true,
+    };
+  },
   cowork: () => {
     const { id: _id, ...p } = defaultProfile("x", "Brief Cowork (dossier local)");
     return {
@@ -101,7 +112,14 @@ export function normalizeProfile(raw: Partial<BriefProfile> & { id?: string }): 
     name: (raw.name ?? d.name).slice(0, 60) || d.name,
     schedule: { time: /^\d{1,2}:\d{2}$/.test(raw.schedule?.time ?? "") ? raw.schedule!.time : d.schedule.time, days: Array.from(new Set(days)).sort() },
     sources: { ...d.sources, ...(raw.sources ?? {}) },
-    mode: raw.mode === "localFolder" ? "localFolder" : "connectors",
+    mode: raw.mode === "localFolder" || raw.mode === "routine" ? raw.mode : "connectors",
+    routine: {
+      fireUrl: typeof raw.routine?.fireUrl === "string" ? raw.routine.fireUrl.trim() : "",
+      token: typeof raw.routine?.token === "string" ? raw.routine.token.trim() : "",
+      notionPage: typeof raw.routine?.notionPage === "string" ? raw.routine.notionPage.trim() : "",
+      workspace: raw.routine?.workspace === "personal" ? "personal" : "company",
+      timeoutMinutes: Math.min(60, Math.max(5, Number(raw.routine?.timeoutMinutes) || 20)),
+    },
     localFolder: {
       manifestFile: /^[\w.-]+\.json$/.test(raw.localFolder?.manifestFile ?? "") ? raw.localFolder!.manifestFile : d.localFolder.manifestFile,
       watch: raw.localFolder?.watch ?? d.localFolder.watch,

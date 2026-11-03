@@ -28,6 +28,11 @@ export interface CoworkPromptParams {
   notionContext?: string;
   /** Dépôts GitHub (owner/repo) à suivre si un connecteur GitHub est disponible. */
   githubRepos?: string[];
+  /**
+   * Destination du brief : dossier local (Claude Cowork sur le poste) ou page Notion de dépôt
+   * (routine Claude Code déclenchée par API, exécutée dans le cloud). Défaut : dossier local.
+   */
+  target?: { kind: "folder" } | { kind: "notion"; pageUrl: string };
 }
 
 export function buildCoworkPrompt(p: CoworkPromptParams): string {
@@ -41,15 +46,48 @@ export function buildCoworkPrompt(p: CoworkPromptParams): string {
     ? `- **GitHub** (si le connecteur GitHub est disponible) sur ${repos.map((r) => `\`${r}\``).join(", ")} : PR mergées sur la branche principale (= livré), PR ouvertes en attente de review depuis plus de 2 jours, CI en échec sur la branche principale, nouvelles releases / tags. Sans connecteur GitHub : utilise la relation \`GitHub pull requests\` des Tech tasks et le champ \`Merge\`.`
     : "- **GitHub** : utilise la relation `GitHub pull requests` des Tech tasks et le champ `Merge` (merged:main = en production). Si un connecteur GitHub est disponible, ajoute les PR en attente de review depuis plus de 2 jours et la CI en échec.";
 
+  // ── Blocs dépendant de la destination (dossier local Cowork / page Notion pour une routine cloud)
+  const notionPage = p.target?.kind === "notion" ? p.target.pageUrl.trim() || "<URL_DE_LA_PAGE_NOTION_DE_DÉPÔT>" : null;
+  const destination = notionPage
+    ? `Une extension Chrome (Notebooker) te déclenche par API, puis lit ce que tu déposes dans une **page Notion de dépôt**, l'envoie dans NotebookLM et génère le podcast. **La seule chose que tu modifies est cette page ; tu ne crées ni ne modifies rien d'autre (ni ailleurs dans Notion, ni Gmail, ni GitHub).**
+
+## Page Notion de dépôt
+${notionPage}
+
+## Message de déclenchement
+Le message qui te déclenche contient une ligne \`requestId: …\` : recopie-la **exactement** dans le champ \`requestId\` du manifest (c'est ainsi que Notebooker reconnaît ta réponse). Sans déclenchement Notebooker, omets \`requestId\`.`
+    : `Une extension Chrome (Notebooker) lit ce que tu écris dans un dossier local, l'envoie dans NotebookLM et génère le podcast. **Tu n'écris que des fichiers dans ce dossier ; tu ne crées ni ne modifies rien ailleurs (ni Notion, ni Gmail, ni GitHub).**
+
+## Dossier de travail
+\`${folder}\``;
+  const previous = notionPage ? "le manifest présent dans la page de dépôt (bloc de code JSON)" : `\`${manifest}\` existant`;
+  const writeSteps = notionPage
+    ? `## 3. Dépôt dans la page Notion
+1. Prépare l'agenda du jour (heure, titre, participants en prénoms, enjeu, « à préparer / à relire »). Pas de lien de visio. Il va **dans le manifest**, en source \`text\` (pas de fichier).
+2. **Remplace tout le contenu** de la page de dépôt par **un seul bloc de code de langage \`json\`** contenant le manifest complet — rien d'autre (pas de titre, pas de commentaire).
+3. Écris ce bloc **en une fois, en dernier** : Notebooker interroge la page toutes les 30 secondes.`
+    : `## 3. Fichiers à écrire (dans cet ordre)
+1. \`AAAA-MM-JJ/${base}-agenda.md\` — réunions du jour : heure, titre, participants (prénoms), enjeu, « à préparer / à relire » (mails, Tech tasks, pages Notion liés). Pas de lien de visio.
+2. **En dernier**, \`${manifest}\` (écrase l'ancien) — l'extension le surveille : il doit être complet quand il apparaît.
+3. Copie identique dans \`archive/AAAA-MM-JJ-${base}.json\`.
+4. Supprime les dossiers \`AAAA-MM-JJ/\` et les archives de plus de 14 jours.`;
+  const formatTitle = notionPage ? "du manifest (bloc de code JSON de la page de dépôt)" : `de \`${manifest}\` (JSON strict, UTF-8)`;
+  const requestLine = notionPage ? `\n  "requestId": "<recopié du message de déclenchement>",` : "";
+  const sourcesExample = notionPage
+    ? `{ "title": "Agenda du jour", "text": "### 09:30–10:30 · Comité KYC Italie\\nParticipants : Marco, Julie\\nÀ préparer : statut de la recette" }`
+    : `{ "title": "Agenda du jour", "file": "AAAA-MM-JJ/${base}-agenda.md" }`;
+  const sourceRule = notionPage ? "`sources` : contenu inline dans `text` uniquement" : "`file` : chemin **relatif** au dossier, `.md` uniquement";
+  const firstCheck = notionPage
+    ? "- [ ] La page de dépôt ne contient qu'un bloc de code `json` valide, `format`/`version` exacts, `id` nouveau, `requestId` recopié, chaque sujet a une `section`."
+    : `- [ ] \`${manifest}\` est un JSON valide, \`format\`/\`version\` exacts, \`id\` nouveau, chaque sujet a une \`section\`.`;
+  const filesCheck = notionPage ? "- [ ] Aucune donnée de la section 5 ; rien d'autre n'a été modifié dans Notion." : "- [ ] Tous les fichiers référencés existent ; aucune donnée de la section 5.";
+
   return `# Tâche planifiée — ${p.profileName} (Notebooker)
 
 Tu es mon chief of staff. Je suis **Product Manager chez Opale Capital** (plateforme d'investissement en Private Equity : portails investisseurs B2C, partenaires B2B2C, back-office admin ; chantiers KYC/LCB-FT, internationalisation BE/IT/LU, intégrations Dotfile / Memo Bank / Harvest-Penelop).
 
 **Objectif du brief** : que j'aie chaque matin (1) en introduction une **vue 360 de ce qui se passe chez Opale**, puis (2) un **deep dive sur ma journée** : mes réunions, les tâches que je dois traiter, l'avancement des développements, les points d'attention.
-Une extension Chrome (Notebooker) lit ce que tu écris dans un dossier local, l'envoie dans NotebookLM et génère le podcast. **Tu n'écris que des fichiers dans ce dossier ; tu ne crées ni ne modifies rien ailleurs (ni Notion, ni Gmail, ni GitHub).**
-
-## Dossier de travail
-\`${folder}\`
+${destination}
 
 ## 0. Contexte de mes outils
 ${context}
@@ -89,7 +127,7 @@ Signale (un sujet par point, \`priority: "haute"\` si c'est critique) :
 - **Agenda** : réunions d'aujourd'hui (ou de demain si l'exécution a lieu après 17 h). Ignore les réunions refusées ; un événement privé = « Événement privé ».
 
 ## 2. Suivi jour après jour — OBLIGATOIRE (c'est ce qui évite les redites)
-Avant d'écrire quoi que ce soit, **lis \`${manifest}\` existant** (le brief précédent) s'il existe.
+Avant d'écrire quoi que ce soit, **lis ${previous}** (le brief précédent) s'il existe.
 1. **Clé stable** : réutilise exactement la \`key\` du brief précédent pour un sujet déjà suivi (ex. \`kyc-italie\`, \`rfc-annulation-bourso\`, \`pole-operations\`). Nouvelle clé courte en kebab-case uniquement pour un sujet nouveau.
 2. **status** :
    - \`new\` : sujet absent du brief précédent ;
@@ -100,17 +138,13 @@ Avant d'écrire quoi que ce soit, **lis \`${manifest}\` existant** (le brief pr�
 4. Chaque \`summary\` : factuel, qui / quoi / échéance, sans formule de politesse ; \`refs\` = sources entre crochets (\`[Mail: objet]\`, \`[Notion: titre]\`, \`[Tech task: titre]\`, \`[Daily Tech: date]\`, \`[GitHub: PR #]\`, \`[Agenda: réunion]\`).
 5. Volume : 25 sujets maximum, du plus important au moins important dans chaque section.
 
-## 3. Fichiers à écrire (dans cet ordre)
-1. \`AAAA-MM-JJ/${base}-agenda.md\` — réunions du jour : heure, titre, participants (prénoms), enjeu, « à préparer / à relire » (mails, Tech tasks, pages Notion liés). Pas de lien de visio.
-2. **En dernier**, \`${manifest}\` (écrase l'ancien) — l'extension le surveille : il doit être complet quand il apparaît.
-3. Copie identique dans \`archive/AAAA-MM-JJ-${base}.json\`.
-4. Supprime les dossiers \`AAAA-MM-JJ/\` et les archives de plus de 14 jours.
+${writeSteps}
 
-## 4. Format exact de \`${manifest}\` (JSON strict, UTF-8)
+## 4. Format exact ${formatTitle}
 \`\`\`json
 {
   "format": "notebooker-brief",
-  "version": 1,
+  "version": 1,${requestLine}
   "id": "AAAA-MM-JJ-${base}",
   "generatedAt": "AAAA-MM-JJTHH:MM:SS+01:00",
   "title": "☀️ ${p.profileName} — <jour en toutes lettres>",
@@ -129,7 +163,7 @@ Avant d'écrire quoi que ce soit, **lis \`${manifest}\` existant** (le brief pr�
       "refs": ["[Notion: KYC Italie]"] }
   ],
   "sources": [
-    { "title": "Agenda du jour", "file": "AAAA-MM-JJ/${base}-agenda.md" }
+    ${sourcesExample}
   ],
   "actions": [
     { "title": "Répondre à Ops sur le périmètre de l'annulation Bourso", "requester": "Ops", "due": "AAAA-MM-JJ",
@@ -139,7 +173,7 @@ Avant d'écrire quoi que ce soit, **lis \`${manifest}\` existant** (le brief pr�
 \`\`\`
 - \`section\` ∈ company · tasks · projects · attention · other — l'extension lit dans l'ordre : vue 360 → (agenda) → tâches → produit & tech → points d'attention.
 - \`id\` **unique par exécution** (date + profil) : l'extension ne traite jamais deux fois le même id.
-- \`priority\` ∈ haute / moyenne / basse ; \`due\` au format AAAA-MM-JJ (sinon omis) ; \`file\` : chemin **relatif** au dossier, \`.md\` uniquement.
+- \`priority\` ∈ haute / moyenne / basse ; \`due\` au format AAAA-MM-JJ (sinon omis) ; ${sourceRule}.
 - \`actions\` : uniquement ce qui m'est explicitement demandé ou ce à quoi je me suis engagé (elles arrivent dans ma file de validation avant tout envoi au backlog).
 
 ## 5. Données sensibles (LCB-FT / RGPD) — non négociable
@@ -149,10 +183,10 @@ Avant d'écrire quoi que ce soit, **lis \`${manifest}\` existant** (le brief pr�
 - En cas de doute, n'écris pas l'information.
 
 ## 6. Vérification avant de terminer
-- [ ] \`${manifest}\` est un JSON valide, \`format\`/\`version\` exacts, \`id\` nouveau, chaque sujet a une \`section\`.
+${firstCheck}
 - [ ] Les quatre rubriques sont couvertes (ou vides faute d'actualité) ; la vue 360 tient en 6 sujets maximum.
 - [ ] Chaque sujet déjà suivi garde sa \`key\` ; les sujets sans nouveauté ont un \`summary\` recopié à l'identique.
-- [ ] Tous les fichiers référencés existent ; aucune donnée de la section 5.
+${filesCheck}
 - [ ] Termine par un résumé en 3 lignes : nb de sujets nouveaux / mis à jour / résolus, et les 3 points d'attention principaux.
 `;
 }

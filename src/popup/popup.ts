@@ -82,7 +82,7 @@ async function init(): Promise<void> {
   $("brief").onclick = async () => {
     status("Brief en cours (2-5 min)… tu peux fermer ce popup, une notification suivra.");
     void send<{ skipped?: string; status?: string }>({ type: "runBriefingNow", profileId: $<HTMLSelectElement>("briefProfile").value })
-      .then((r) => status(r.skipped ?? `Brief terminé : ${r.status ?? "?"}`))
+      .then((r) => status(r.skipped ?? (r.status === "waiting" ? "Routine Claude déclenchée — le podcast sera généré dès son résultat (notification)." : `Brief terminé : ${r.status ?? "?"}`)))
       .catch((e: unknown) => status(String(e instanceof Error ? e.message : e)));
   };
 

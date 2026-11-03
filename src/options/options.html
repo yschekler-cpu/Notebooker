@@ -62,6 +62,7 @@
         <option value="weeklyCompliance">Modèle : récap conformité (vendredi)</option>
         <option value="comex">Modèle : digest Comex (lundi)</option>
         <option value="cowork">Modèle : brief Cowork (dossier local)</option>
+        <option value="routine">Modèle : brief routine Claude (API)</option>
       </select>
       <button id="p_new">+ Nouveau</button>
       <button id="p_dup">Dupliquer</button>
@@ -83,7 +84,29 @@
     <select id="p_mode">
       <option value="connectors">Connecteurs de l'extension (Gmail, Agenda, Notion, Claude)</option>
       <option value="localFolder">Dossier local — fichiers écrits par Claude Cowork</option>
+      <option value="routine">Routine Claude (API) — déclenchée par Notebooker, résultat dans une page Notion</option>
     </select>
+    <div class="routine-only" hidden>
+      <div class="grid">
+        <div><label for="p_r_url">URL d'API de la routine</label><input type="text" id="p_r_url" placeholder="https://api.anthropic.com/v1/claude_code/routines/trig_…/fire" spellcheck="false" /></div>
+        <div><label for="p_r_token">Jeton de la routine</label><input type="password" id="p_r_token" placeholder="sk-ant-oat01-…" autocomplete="off" /></div>
+      </div>
+      <div class="grid">
+        <div><label for="p_r_page">Page Notion de dépôt (URL)</label><input type="text" id="p_r_page" placeholder="https://www.notion.so/…" spellcheck="false" /></div>
+        <div><label for="p_r_ws">Workspace de la page</label><select id="p_r_ws"><option value="company">Entreprise</option><option value="personal">Perso</option></select></div>
+        <div><label for="p_r_timeout">Attente maximale (minutes)</label><input type="number" id="p_r_timeout" min="5" max="60" /></div>
+      </div>
+      <div class="actions">
+        <button data-test="routine-inbox" type="button">Vérifier la page de dépôt</button>
+        <button class="primary" id="p_r_prompt" type="button">Copier le prompt de la routine</button>
+      </div>
+      <div class="glass-inset">
+        <b>Mise en place</b> — 1. Crée une page Notion vide dédiée (ex. « Notebooker — dépôt ») dans l'espace Opale ; connecte-la à Notebooker (Réglages › Notion) et donne à la routine l'accès Notion à cette page.
+        2. Dans Claude Code › Routines : crée la routine avec le prompt copié et les connecteurs Gmail, Agenda, Notion ; ajoute un déclencheur <i>API</i> et génère le jeton.
+        3. Colle ici l'URL et le jeton, enregistre. Au déclenchement (heure du profil ou « Lancer »), Notebooker appelle la routine, attend son dépôt dans la page puis génère le podcast.
+        <br/>Le jeton ne sert qu'à <i>déclencher</i> cette routine (aucun accès en lecture) ; il n'est envoyé qu'à api.anthropic.com.
+      </div>
+    </div>
     <div class="local-only" hidden>
       <div class="grid">
         <div><label for="p_manifest">Fichier manifest dans le dossier</label><input type="text" id="p_manifest" placeholder="latest.json" spellcheck="false" /></div>

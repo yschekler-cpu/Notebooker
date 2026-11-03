@@ -2,7 +2,8 @@ import { redact } from "../shared/redact";
 import { formatDateFR, localDay } from "../shared/schedule";
 import { getBriefingRuns, getMemory, getSettings, saveBriefingRun, saveMemory, uid } from "../shared/storage";
 import type { AudioOptions, BriefingRun, BriefProfile, NotionWorkspaceKey, Settings, SourcePayload } from "../shared/types";
-import { readInbox } from "./localInbox";
+import { readInbox, type InboxManifest } from "./localInbox";
+import { fireRoutine, matchesRequest, readRoutineManifest } from "./routine";
 import { NO_REPEAT_INSTRUCTIONS, STRUCTURE_INSTRUCTIONS, diffTopics, followUpToMarkdown, hasNews, newsToMarkdown } from "./topicDiff";
 import { enqueueActions } from "./actions";
 import { agendaToMarkdown, calendarWindow, fetchEvents, type CalendarEvent } from "./calendar";
@@ -166,6 +167,7 @@ async function doRunBriefing(settings: Settings, profile: BriefProfile, opts: { 
   };
 
   if (profile.mode === "localFolder") return runLocalBrief(settings, profile, run, log, opts);
+  if (profile.mode === "routine") return startRoutineBrief(profile, run, log);
 
   try {
     // 1) Collecte
@@ -361,65 +363,189 @@ async function runLocalBrief(settings: Settings, profile: BriefProfile, run: Bri
       return finish(run, "partial");
     }
 
-    // Diff quotidien : seul ce qui est nouveau ou a changé est développé
-    const today = localDay();
-    const { diff, memory } = diffTopics(await getMemory(profile.id), manifest.topics, today);
-    if (manifest.topics.length) {
-      log(`Suivi : ${diff.fresh.length} nouveau(x), ${diff.changed.length} modifié(s), ${diff.unchanged.length} sans nouveauté, ${diff.resolved.length} résolu(s), ${diff.reminders.length} rappel(s)`);
-    }
-
-    const mask = (t: string) => (settings.claude.redactPII ? redact(t, { amounts: settings.claude.redactAmounts }) : t);
-    const date = formatDateFR();
-    const sources: SourcePayload[] = [];
-    const news = newsToMarkdown(diff, today);
-    if (news) sources.push({ type: "text", title: `Nouveautés & mises à jour — ${date}`, text: mask(news) });
-    for (const f of files) sources.push({ type: "text", title: `${f.title} — ${date}`, text: mask(f.text) });
-    const follow = followUpToMarkdown(diff);
-    if (follow) sources.push({ type: "text", title: `Suivi des sujets ouverts — ${date}`, text: mask(follow) });
-
-    if (!hasNews(diff, today) && files.length === 0) {
-      log("Rien de nouveau depuis le dernier brief — pas de podcast généré (aucune redite).", "warn");
-      await saveMemory(profile.id, memory);
-      await markProcessed(profile.id, manifest.id);
-      notify(`${profile.name} : rien de nouveau`, "Aucun sujet nouveau ou modifié depuis le dernier brief.");
-      return finish(run, "success");
-    }
-
-    if (manifest.actions.length && profile.extractActions) {
-      const added = await enqueueActions(manifest.actions, profile.id, run.id);
-      if (added.length) {
-        log(`${added.length} action(s) à valider avant envoi au backlog`);
-        notify(`✅ ${added.length} action(s) à valider`, "Ouvre Notebooker › Actions pour les envoyer au backlog Notion.", chrome.runtime.getURL("options.html#actions"));
-      }
-    }
-
-    const audio: AudioOptions = { ...profile.audio, ...(manifest.audio ?? {}) };
-    audio.instructions = [audio.instructions, STRUCTURE_INSTRUCTIONS, NO_REPEAT_INSTRUCTIONS].filter(Boolean).join(" ");
-    const title = manifest.title || profile.notebookTitleTemplate.replace("{date}", date);
-
-    const { notebookId, added, audioStarted } = await createNotebookWithAudio(title, sources, audio, log, async (id) => {
-      run.notebookId = id;
-      await saveBriefingRun(run);
-      await trackBriefNotebook(id, profile.id);
-      await setLastPodcast({ notebookId: id, title, profileName: profile.name, createdAt: new Date().toISOString(), status: "generating" });
-      // Mémoire et anti-doublon enregistrés dès que le notebook existe
-      await saveMemory(profile.id, memory);
-      await markProcessed(profile.id, manifest.id);
-    });
-    run.notebookId = notebookId;
-    run.sourcesCount = added;
-    let degraded = added < sources.length;
-    if (audioStarted) await chrome.alarms.create(`audio:${notebookId}`, { delayInMinutes: 4, periodInMinutes: 3 });
-    else {
-      degraded = true;
-      notify(`${profile.name} prêt (sans audio)`, "Le notebook est créé ; lance l'Audio Overview manuellement.", await notebookUrl(notebookId));
-    }
-    await applyRetention(profile, log);
-    return finish(run, degraded ? "partial" : "success");
+    return await processManifest(settings, profile, run, log, manifest, files);
   } catch (e) {
     log(msg(e), "error");
     if (!opts.interactive) notify(`${profile.name} : échec`, msg(e));
     return finish(run, "error");
+  }
+}
+
+/**
+ * Traitement commun (dossier local / routine) : diff jour après jour → sources → notebook + podcast.
+ * Lève une exception en cas d'échec ; l'appelant journalise et clôt le run.
+ */
+async function processManifest(
+  settings: Settings,
+  profile: BriefProfile,
+  run: BriefingRun,
+  log: Logger,
+  manifest: InboxManifest,
+  files: { title: string; text: string }[],
+): Promise<BriefingRun> {
+  // Diff quotidien : seul ce qui est nouveau ou a changé est développé
+  const today = localDay();
+  const { diff, memory } = diffTopics(await getMemory(profile.id), manifest.topics, today);
+  if (manifest.topics.length) {
+    log(`Suivi : ${diff.fresh.length} nouveau(x), ${diff.changed.length} modifié(s), ${diff.unchanged.length} sans nouveauté, ${diff.resolved.length} résolu(s), ${diff.reminders.length} rappel(s)`);
+  }
+
+  const mask = (t: string) => (settings.claude.redactPII ? redact(t, { amounts: settings.claude.redactAmounts }) : t);
+  const date = formatDateFR();
+  const sources: SourcePayload[] = [];
+  const news = newsToMarkdown(diff, today);
+  if (news) sources.push({ type: "text", title: `Nouveautés & mises à jour — ${date}`, text: mask(news) });
+  for (const f of files) sources.push({ type: "text", title: `${f.title} — ${date}`, text: mask(f.text) });
+  const follow = followUpToMarkdown(diff);
+  if (follow) sources.push({ type: "text", title: `Suivi des sujets ouverts — ${date}`, text: mask(follow) });
+
+  if (!hasNews(diff, today) && files.length === 0) {
+    log("Rien de nouveau depuis le dernier brief — pas de podcast généré (aucune redite).", "warn");
+    await saveMemory(profile.id, memory);
+    await markProcessed(profile.id, manifest.id);
+    notify(`${profile.name} : rien de nouveau`, "Aucun sujet nouveau ou modifié depuis le dernier brief.");
+    return finish(run, "success");
+  }
+
+  if (manifest.actions.length && profile.extractActions) {
+    const added = await enqueueActions(manifest.actions, profile.id, run.id);
+    if (added.length) {
+      log(`${added.length} action(s) à valider avant envoi au backlog`);
+      notify(`✅ ${added.length} action(s) à valider`, "Ouvre Notebooker › Actions pour les envoyer au backlog Notion.", chrome.runtime.getURL("options.html#actions"));
+    }
+  }
+
+  const audio: AudioOptions = { ...profile.audio, ...(manifest.audio ?? {}) };
+  audio.instructions = [audio.instructions, STRUCTURE_INSTRUCTIONS, NO_REPEAT_INSTRUCTIONS].filter(Boolean).join(" ");
+  const title = manifest.title || profile.notebookTitleTemplate.replace("{date}", date);
+
+  const { notebookId, added, audioStarted } = await createNotebookWithAudio(title, sources, audio, log, async (id) => {
+    run.notebookId = id;
+    await saveBriefingRun(run);
+    await trackBriefNotebook(id, profile.id);
+    await setLastPodcast({ notebookId: id, title, profileName: profile.name, createdAt: new Date().toISOString(), status: "generating" });
+    // Mémoire et anti-doublon enregistrés dès que le notebook existe
+    await saveMemory(profile.id, memory);
+    await markProcessed(profile.id, manifest.id);
+  });
+  run.notebookId = notebookId;
+  run.sourcesCount = added;
+  let degraded = added < sources.length;
+  if (audioStarted) await chrome.alarms.create(`audio:${notebookId}`, { delayInMinutes: 4, periodInMinutes: 3 });
+  else {
+    degraded = true;
+    notify(`${profile.name} prêt (sans audio)`, "Le notebook est créé ; lance l'Audio Overview manuellement.", await notebookUrl(notebookId));
+  }
+  await applyRetention(profile, log);
+  return finish(run, degraded ? "partial" : "success");
+}
+
+// ─── Mode « Routine Claude (API) » ────────────────────────────────────────────
+
+export interface RoutinePending {
+  profileId: string;
+  runId: string;
+  requestId: string;
+  firedAt: number;
+  deadline: number;
+  sessionUrl: string;
+}
+
+const pendingKey = (profileId: string) => `routinePending:${profileId}`;
+export const routineAlarm = (profileId: string) => `routine:${profileId}`;
+
+export async function getRoutinePending(profileId: string): Promise<RoutinePending | null> {
+  const k = pendingKey(profileId);
+  return ((await chrome.storage.local.get(k))[k] as RoutinePending | undefined) ?? null;
+}
+
+async function clearRoutinePending(profileId: string): Promise<void> {
+  await chrome.storage.local.remove(pendingKey(profileId));
+  await chrome.alarms.clear(routineAlarm(profileId));
+}
+
+/** Déclenche la routine puis rend la main : le résultat est attendu par alarmes (robuste à l'arrêt du SW). */
+async function startRoutineBrief(profile: BriefProfile, run: BriefingRun, log: Logger): Promise<BriefingRun> {
+  try {
+    const pending = await getRoutinePending(profile.id);
+    if (pending && Date.now() < pending.deadline) {
+      log(`Une routine est déjà en cours pour ce profil (déclenchée à ${new Date(pending.firedAt).toLocaleTimeString("fr-FR")}) — en attente de son résultat.`, "warn");
+      return finish(run, "partial");
+    }
+    const requestId = `nb-${Date.now().toString(36)}-${uid().slice(0, 8)}`;
+    const fired = await fireRoutine(profile, requestId);
+    log(`Routine Claude déclenchée — session ${fired.sessionUrl || fired.sessionId}`);
+    log(`En attente du manifest (requestId ${requestId}) dans la page Notion de dépôt, ${profile.routine.timeoutMinutes} min maximum…`);
+    const now = Date.now();
+    await chrome.storage.local.set({
+      [pendingKey(profile.id)]: { profileId: profile.id, runId: run.id, requestId, firedAt: now, deadline: now + profile.routine.timeoutMinutes * 60_000, sessionUrl: fired.sessionUrl } satisfies RoutinePending,
+    });
+    await chrome.alarms.create(routineAlarm(profile.id), { delayInMinutes: 0.5, periodInMinutes: 0.5 });
+    run.status = "waiting";
+    await saveBriefingRun(run);
+    return run;
+  } catch (e) {
+    log(msg(e), "error");
+    notify(`${profile.name} : échec`, msg(e));
+    return finish(run, "error");
+  }
+}
+
+/** Vérification périodique : manifest déposé ? → traitement ; délai dépassé ? → alerte. */
+export async function onRoutineAlarm(profileId: string): Promise<"processed" | "waiting" | "timeout" | "none"> {
+  const pending = await getRoutinePending(profileId);
+  if (!pending) {
+    await chrome.alarms.clear(routineAlarm(profileId));
+    return "none";
+  }
+  const settings = await getSettings();
+  const profile = settings.profiles.find((p) => p.id === profileId);
+  const run = (await getBriefingRuns()).find((r) => r.id === pending.runId);
+  if (!profile || !run) {
+    await clearRoutinePending(profileId);
+    return "none";
+  }
+  const log: Logger = (message, level = "info") => {
+    run.steps.push({ at: new Date().toISOString(), message, level });
+    void saveBriefingRun(run);
+  };
+
+  let manifest: InboxManifest | null = null;
+  try {
+    manifest = await readRoutineManifest(settings, profile);
+  } catch (e) {
+    // Page momentanément illisible ou manifest en cours d'écriture : on retentera jusqu'au délai
+    if (Date.now() < pending.deadline) return "waiting";
+    log(msg(e), "error");
+  }
+
+  if (!manifest || !matchesRequest(manifest, pending.requestId, pending.firedAt)) {
+    if (Date.now() < pending.deadline) return "waiting";
+    await clearRoutinePending(profileId);
+    log(`Aucun résultat de la routine après ${profile.routine.timeoutMinutes} min — vérifie la session : ${pending.sessionUrl}`, "error");
+    notify(`${profile.name} : pas de résultat`, "La routine n'a pas déposé son brief dans la page Notion à temps.", pending.sessionUrl || undefined);
+    await finish(run, "error");
+    return "timeout";
+  }
+
+  // Résultat trouvé : on arrête l'attente AVANT le traitement (pas de double traitement par l'alarme suivante)
+  await clearRoutinePending(profileId);
+  run.status = "running";
+  log(`Manifest « ${manifest.id} » reçu de la routine (${manifest.topics.length} sujet(s)) en ${Math.round((Date.now() - pending.firedAt) / 60_000)} min`);
+  const stop = keepAlive();
+  try {
+    const fileRefs = manifest.sources.filter((x) => x.file && !x.text);
+    if (fileRefs.length) log(`${fileRefs.length} source(s) « file » ignorée(s) : en mode routine, les sources doivent être inline (« text »).`, "warn");
+    const files = manifest.sources.filter((x) => x.text).map((x) => ({ title: x.title, text: x.text! }));
+    await processManifest(settings, profile, run, log, manifest, files);
+    return "processed";
+  } catch (e) {
+    log(msg(e), "error");
+    notify(`${profile.name} : échec`, msg(e));
+    await finish(run, "error");
+    return "processed";
+  } finally {
+    stop();
   }
 }
 

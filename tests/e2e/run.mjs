@@ -40,6 +40,9 @@ const notionCalls = [];
 const claudeCalls = [];
 const googleCalls = [];
 const oauthCalls = [];
+const routineCalls = [];
+const DEPOT = "abcdefabcdefabcdefabcdefabcdef12";
+let depotBlocks = [];
 const backlogPages = [];
 const BACKLOG_DB = "fedcba9876543210fedcba9876543210";
 const MAILS = [
@@ -103,6 +106,7 @@ function startMockServer() {
       const now = new Date().toISOString();
       if (path === "/v1/users/me") return json({ bot: { workspace_name: "Opale (mock)" } });
       if (path === "/v1/search") return json({ results: [notionPage(NOTION_PAGE, "Spec KYC Italie", now)], has_more: false, next_cursor: null });
+      if (path === `/v1/blocks/${DEPOT}/children`) return json({ results: depotBlocks, has_more: false, next_cursor: null });
       if (path.startsWith("/v1/pages/")) return json(notionPage(NOTION_PAGE, "Spec KYC Italie", now));
       if (path === `/v1/databases/${BACKLOG_DB}` && req.method === "GET")
         return json({
@@ -143,6 +147,16 @@ function startMockServer() {
         return res.end(sse(text));
       }
       return json({ id: "msg_mock", type: "message", role: "assistant", model: "claude-opus-5-5", content: [{ type: "text", text: "OK" }], stop_reason: "end_turn", stop_sequence: null, usage: { input_tokens: 1, output_tokens: 1 } });
+    }
+
+    // API officielle des routines Claude Code (mock) : renvoie l'id de session, puis la « routine »
+    // dépose son manifest dans la page Notion de dépôt de façon asynchrone.
+    if (/^\/v1\/claude_code\/routines\/trig_[\w-]+\/fire$/.test(url.pathname)) {
+      const body = JSON.parse(raw || "{}");
+      routineCalls.push({ path: url.pathname, headers: req.headers, body });
+      if (req.headers.authorization !== "Bearer sk-ant-oat01-e2e_routine_token") return json({ type: "error", error: { type: "authentication_error", message: "bad token" } }, 401);
+      // Le dépôt dans la page Notion est piloté par le scénario (routine « asynchrone »)
+      return json({ type: "routine_fire", claude_code_session_id: `session_${routineCalls.length}`, claude_code_session_url: `https://claude.ai/code/session_${routineCalls.length}` });
     }
 
     if (url.pathname.startsWith("/gmail/")) {
@@ -747,6 +761,81 @@ try {
     // Page d'options rechargée pour les scénarios suivants (le profil Cowork reste actif : ses dépôts sont déjà traités)
     await options.goto("about:blank");
     await options.goto(`chrome-extension://${extId}/options.html`);
+  });
+
+  await test("routine Claude (API) : déclenchement → attente (ancien dépôt ignoré) → résultat → podcast ; dédoublonnage ; délai dépassé", async () => {
+    const profileId = "routine-e2e";
+    await sw.evaluate(async ({ pid, base, depot }) => {
+      const { settings } = await chrome.storage.local.get("settings");
+      settings.notion.company = { ...settings.notion.company, authMode: "token", token: "secret_mock" };
+      settings.profiles = settings.profiles.filter((p) => p.id !== pid);
+      settings.profiles.push({
+        id: pid, name: "Brief routine", enabled: false, mode: "routine",
+        routine: { fireUrl: `${base}/v1/claude_code/routines/trig_e2e/fire`, token: "sk-ant-oat01-e2e_routine_token", notionPage: depot, workspace: "company", timeoutMinutes: 10 },
+        memory: true, extractActions: false, retentionDays: 0,
+      });
+      await chrome.storage.local.set({ settings });
+    }, { pid: profileId, base: E2E_BASE, depot: DEPOT });
+
+    // Page de dépôt : un ANCIEN brief y traîne (autre requestId) → ne doit pas être pris
+    depotBlocks = [{ type: "code", code: { language: "json", rich_text: [{ plain_text: JSON.stringify({ format: "notebooker-brief", version: 1, id: "vieux", requestId: "nb-ancien", generatedAt: new Date().toISOString(), topics: [{ key: "old", title: "Ancien", summary: "x" }] }) }] } }];
+    const insp = await send({ type: "inspectRoutineInbox", profileId });
+    assert.ok(insp.ok, insp.error);
+    assert.match(insp.data, /dernier manifest « vieux »/);
+
+    // La routine « tourne » mais n'a pas encore déposé son résultat
+    const notebooksBefore = (await mockState(home)).notebooks.length;
+    let r = await send({ type: "runBriefingNow", profileId });
+    assert.ok(r.ok, r.error);
+    assert.equal(r.data.status, "waiting", JSON.stringify(r.data.steps));
+    assert.equal(routineCalls.length, 1);
+    const call = routineCalls[0];
+    assert.equal(call.headers.authorization, "Bearer sk-ant-oat01-e2e_routine_token");
+    assert.equal(call.headers["anthropic-version"], "2026-10-21");
+    const requestId = /requestId: (\S+)/.exec(call.body.text)[1];
+    assert.match(call.body.text, new RegExp(DEPOT));
+    const alarms = (await sw.evaluate(() => chrome.alarms.getAll())).map((a) => a.name);
+    assert.ok(alarms.includes(`routine:${profileId}`), "attente armée par alarme");
+    assert.equal((await send({ type: "routineCheckNow", profileId })).data, "waiting", "ancien dépôt ignoré (requestId différent)");
+
+    // Second déclenchement pendant l'attente → refusé (pas de double session)
+    const dup = await send({ type: "runBriefingNow", profileId });
+    assert.match(dup.data.steps.map((x) => x.message).join(" "), /déjà en cours/);
+    assert.equal(routineCalls.length, 1);
+
+    // La routine dépose enfin son résultat (même requestId)
+    depotBlocks = [{ type: "code", code: { language: "json", rich_text: [{ plain_text: JSON.stringify({
+      format: "notebooker-brief", version: 1, id: `routine-${requestId}`, requestId, generatedAt: new Date().toISOString(), title: "☀️ Brief routine",
+      topics: [
+        { key: "pole-ops", section: "company", title: "Opérations", status: "new", summary: "Nouveau process d'appels de fonds validé.", owner: "Opérations" },
+        { key: "rfc-x", section: "tasks", title: "RFC export Metabase", status: "new", summary: "À qualifier : Waiting for Input.", priority: "haute" },
+        { key: "proj-kyc", section: "projects", title: "KYC Italie", status: "new", summary: "Recette démarrée, MEP le 14/11." },
+      ],
+      sources: [{ title: "Agenda du jour", text: "### 09:30–10:30 · Comité KYC Italie" }],
+    }) }] } }];
+    assert.equal((await send({ type: "routineCheckNow", profileId })).data, "processed");
+    const run = await waitFor(async () => {
+      const x = ((await sw.evaluate(() => chrome.storage.local.get("briefingRuns"))).briefingRuns ?? []).find((y) => y.id === r.data.id);
+      return x && x.status !== "running" && x.status !== "waiting" ? x : null;
+    }, 60_000, 500);
+    assert.equal(run.status, "success", JSON.stringify(run.steps.map((x) => x.message)));
+    assert.match(run.steps.map((x) => x.message).join(" | "), /Routine Claude déclenchée — session https:\/\/claude\.ai\/code\/session_1/);
+    const nb = (await mockState(home)).notebooks.find((n) => n.id === run.notebookId);
+    assert.equal(nb.title, "☀️ Brief routine");
+    assert.deepEqual(nb.sources.map((x) => x.title.split(" — ")[0]), ["Nouveautés & mises à jour", "Agenda du jour"]);
+    assert.match(nb.sources[0].value, /## 🌐 Vue 360[\s\S]*Opérations[\s\S]*## ✅ Mes tâches[\s\S]*RFC export Metabase[\s\S]*## 🚀 Produit & Tech[\s\S]*KYC Italie/);
+    assert.equal(nb.sources[1].value.includes("Comité KYC Italie"), true, "source inline de la routine");
+    assert.ok(!(await sw.evaluate(() => chrome.alarms.getAll())).some((a) => a.name === `routine:${profileId}`), "attente terminée");
+    assert.equal((await mockState(home)).notebooks.length, notebooksBefore + 1);
+
+    // Délai dépassé : nouveau déclenchement, la routine ne répond pas → erreur explicite avec lien de session
+    r = await send({ type: "runBriefingNow", profileId });
+    assert.equal(r.data.status, "waiting");
+    await sw.evaluate((pid) => chrome.storage.local.get(`routinePending:${pid}`).then((o) => chrome.storage.local.set({ [`routinePending:${pid}`]: { ...o[`routinePending:${pid}`], deadline: Date.now() - 1 } })), profileId);
+    assert.equal((await send({ type: "routineCheckNow", profileId })).data, "timeout");
+    const failed = ((await sw.evaluate(() => chrome.storage.local.get("briefingRuns"))).briefingRuns ?? []).find((y) => y.id === r.data.id);
+    assert.equal(failed.status, "error");
+    assert.match(failed.steps.at(-1).message, /Aucun résultat de la routine après 10 min — vérifie la session : https:\/\/claude\.ai\/code\/session_2/);
   });
 
   await test("sécurité : depuis le monde isolé du content script, ni brief ni lecture des tokens", async () => {
