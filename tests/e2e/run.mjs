@@ -4,7 +4,8 @@
  * Prérequis local : `npx playwright install chromium` (Playwright non listé en dépendance).
  */
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import os from "node:os";
 import http from "node:http";
 import { createRequire } from "node:module";
 import path from "node:path";
@@ -618,6 +619,127 @@ try {
     await options.selectOption("#n_c_mode", "token");
     await options.click("#save");
     await waitMsg(options, /Enregistré/);
+  });
+
+  await test("dossier local (Cowork) : J1 nouveau → J2 diff (pas de redite) → J3 rien de nouveau = pas de podcast ; dernier podcast dans la popup", async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "notebooker inbox "));
+    const day = (offset) => { const d = new Date(Date.now() + offset * 86_400_000); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
+    const writeBrief = (id, topics, withAgenda) => {
+      const folder = path.join(dir, id);
+      mkdirSync(folder, { recursive: true });
+      if (withAgenda) writeFileSync(path.join(folder, "agenda.md"), "### 10:00–11:00 · Comité KYC Italie\nParticipants : Marco\nÀ relire : spec KYC");
+      writeFileSync(path.join(dir, "latest.json"), JSON.stringify({
+        format: "notebooker-brief", version: 1, id, generatedAt: new Date().toISOString(), title: `☀️ Brief Cowork ${id}`,
+        topics, sources: withAgenda ? [{ title: "Agenda du jour", file: `${id}/agenda.md` }] : [],
+        actions: [{ title: "Signer la note de conformité Italie", requester: "Conformité", due: "", priority: "moyenne", source: "[Mail: Note Italie]", context: "" }],
+      }));
+    };
+    writeBrief("j1", [
+      { key: "kyc-italie", title: "KYC Italie", status: "new", summary: "Le format du codice fiscale est en attente de validation par Marco.", refs: ["[Mail: Codice fiscale]"] },
+      { key: "eltif", title: "ELTIF 2", status: "new", summary: "Note AMF reçue, analyse juridique en cours.", refs: [] },
+    ], true);
+
+    await options.goto("about:blank");
+    await options.goto(`chrome-extension://${extId}/options.html`);
+    await options.fill("#li_path", dir);
+    await options.selectOption("#p_template", "cowork");
+    await options.click("#p_new");
+    assert.equal(await options.inputValue("#p_mode"), "localFolder");
+    assert.equal(await options.isVisible("#p_src_gmail"), false, "sources connecteurs masquées en mode dossier local");
+    await options.check("#p_enabled");
+    await options.click("#save");
+    await waitMsg(options, /Brief Cowork \(dossier local\) :/);
+    assert.match(await options.textContent("#li_access"), /autorisé/);
+    await options.click("[data-test=inbox]");
+    await waitMsg(options, /Dépôt « j1 ».*2 sujet\(s\), 1 fichier\(s\), 1 action\(s\) — prêt à traiter/);
+    const alarms = (await sw.evaluate(() => chrome.alarms.getAll())).map((a) => a.name);
+    assert.ok(alarms.includes("inbox"), "surveillance du dossier planifiée");
+    const profileId = (await sw.evaluate(() => chrome.storage.local.get("settings"))).settings.profiles.find((p) => p.mode === "localFolder").id;
+
+    const runFor = async (expectNotebook) => {
+      const before = ((await sw.evaluate(() => chrome.storage.local.get("briefingRuns"))).briefingRuns ?? []).filter((r) => r.profileId === profileId).length;
+      const res = await send({ type: "checkInboxNow" });
+      assert.ok(res.ok, res.error);
+      const mine = res.data.find((x) => x.profileId === profileId);
+      assert.ok(mine?.started, `surveillance : ${JSON.stringify(res.data)}`);
+      return waitFor(async () => {
+        const runs = ((await sw.evaluate(() => chrome.storage.local.get("briefingRuns"))).briefingRuns ?? []).filter((r) => r.profileId === profileId);
+        const r = runs.length > before ? runs[0] : null;
+        return r && r.status !== "running" && (!expectNotebook || r.notebookId) ? r : null;
+      }, 60_000, 500);
+    };
+
+    // ── J1 : tout est nouveau
+    const r1 = await runFor(true);
+    assert.equal(r1.status, "success", JSON.stringify(r1.steps.map((x) => x.message)));
+    let nb = (await mockState(home)).notebooks.find((n) => n.id === r1.notebookId);
+    assert.equal(nb.title, "☀️ Brief Cowork j1");
+    assert.deepEqual(nb.sources.map((x) => x.title.split(" — ")[0]), ["Nouveautés & mises à jour", "Agenda du jour"]);
+    assert.match(nb.sources[0].value, /## 🆕 Nouveaux sujets[\s\S]*KYC Italie[\s\S]*ELTIF 2/);
+    assert.match(nb.audio.instructions, /pas un récapitulatif/);
+    const pending = (await sw.evaluate(() => chrome.storage.local.get("actionItems"))).actionItems.filter((a) => a.status === "pending");
+    assert.ok(pending.some((a) => a.title === "Signer la note de conformité Italie"), "action du manifest en file de validation");
+    // Même dépôt : jamais retraité automatiquement
+    const again = (await send({ type: "checkInboxNow" })).data.find((x) => x.profileId === profileId);
+    assert.equal(again.started, false);
+    assert.equal(again.reason, "déjà traité");
+
+    // ── J2 : on simule le passage d'un jour (mémoire datée d'hier)
+    const shiftMemory = () => sw.evaluate(async ({ pid, y }) => {
+      const key = `briefMemory:${pid}`;
+      const m = (await chrome.storage.local.get(key))[key];
+      for (const t of Object.values(m.topics)) { if (t.firstSeen > y) t.firstSeen = y; t.lastSeen = y; if (t.lastChanged > y) t.lastChanged = y; }
+      m.lastBriefDate = y;
+      await chrome.storage.local.set({ [key]: m });
+    }, { pid: profileId, y: day(-1) });
+    await shiftMemory();
+    writeBrief("j2", [
+      { key: "kyc-italie", title: "KYC Italie", status: "updated", summary: "Marco a validé le format ; reste la signature conformité avant vendredi.", refs: [] },
+      // Cowork répète ELTIF à l'identique (casse / ponctuation près) : doit être détecté comme « sans nouveauté »
+      { key: "eltif", title: "ELTIF 2", status: "updated", summary: "note AMF reçue — analyse juridique en cours", refs: [] },
+      { key: "memo-bank", title: "Memo Bank", status: "new", summary: "Nouveau webhook de virement disponible en sandbox.", refs: [] },
+    ], false);
+    const r2 = await runFor(true);
+    nb = (await mockState(home)).notebooks.find((n) => n.id === r2.notebookId);
+    const news = nb.sources.find((x) => x.title.startsWith("Nouveautés")).value;
+    const follow = nb.sources.find((x) => x.title.startsWith("Suivi des sujets ouverts")).value;
+    assert.match(news, /## 🆕 Nouveaux sujets[\s\S]*Memo Bank/);
+    assert.match(news, /## 🔄 Ce qui a changé[\s\S]*KYC Italie — suivi depuis le/);
+    assert.ok(!/AMF/.test(news), "sujet inchangé absent des nouveautés (pas de redite)");
+    assert.match(follow, /ELTIF 2 — ouvert depuis le/);
+    assert.match(r2.steps.map((x) => x.message).join(" | "), /1 nouveau\(x\), 1 modifié\(s\), 1 sans nouveauté/);
+
+    // ── J3 : tout est identique, aucun fichier → pas de podcast (aucune redite)
+    await shiftMemory();
+    writeBrief("j3", [
+      { key: "kyc-italie", title: "KYC Italie", status: "ongoing", summary: "Marco a validé le format ; reste la signature conformité avant vendredi.", refs: [] },
+      { key: "eltif", title: "ELTIF 2", status: "ongoing", summary: "Note AMF reçue, analyse juridique en cours.", refs: [] },
+      { key: "memo-bank", title: "Memo Bank", status: "ongoing", summary: "Nouveau webhook de virement disponible en sandbox.", refs: [] },
+    ], false);
+    const notebooksBefore = (await mockState(home)).notebooks.length;
+    const r3 = await runFor(false);
+    assert.equal(r3.notebookId, null);
+    assert.match(r3.steps.map((x) => x.message).join(" | "), /Rien de nouveau depuis le dernier brief/);
+    assert.equal((await mockState(home)).notebooks.length, notebooksBefore, "aucun notebook créé");
+
+    // ── Dernier podcast : affiché dans la popup et lisible
+    await new Promise((r) => setTimeout(r, 3500)); // le mock rend l'audio prêt après ~3 s
+    const popup = await ctx.newPage();
+    await popup.goto(`chrome-extension://${extId}/popup.html`);
+    await popup.waitForSelector("#podcastCard:not([hidden])");
+    assert.equal(await popup.textContent("#podcastTitle"), "☀️ Brief Cowork j2");
+    const tabsBefore = (await sw.evaluate(() => chrome.tabs.query({ url: "http://127.0.0.1/notebook/*" }))).length;
+    await popup.click("#podcastPlay");
+    await waitFor(async () => /Lecture lancée|Notebook ouvert|pas encore prêt/.test(await popup.textContent("#status")), 30_000);
+    assert.match(await popup.textContent("#status"), /Lecture lancée/);
+    const tabs = await sw.evaluate(() => chrome.tabs.query({ url: "http://127.0.0.1/notebook/*" }));
+    assert.equal(tabs.length, tabsBefore + 1, "onglet du podcast ouvert (et conservé)");
+    assert.ok(tabs.some((t) => t.url.includes(r2.notebookId)));
+    await popup.close();
+
+    // Page d'options rechargée pour les scénarios suivants (le profil Cowork reste actif : ses dépôts sont déjà traités)
+    await options.goto("about:blank");
+    await options.goto(`chrome-extension://${extId}/options.html`);
   });
 
   await test("sécurité : depuis le monde isolé du content script, ni brief ni lecture des tokens", async () => {

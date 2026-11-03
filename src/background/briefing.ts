@@ -1,7 +1,9 @@
 import { redact } from "../shared/redact";
 import { formatDateFR, localDay } from "../shared/schedule";
 import { getBriefingRuns, getMemory, getSettings, saveBriefingRun, saveMemory, uid } from "../shared/storage";
-import type { BriefingRun, BriefProfile, NotionWorkspaceKey, Settings, SourcePayload } from "../shared/types";
+import type { AudioOptions, BriefingRun, BriefProfile, NotionWorkspaceKey, Settings, SourcePayload } from "../shared/types";
+import { readInbox } from "./localInbox";
+import { NO_REPEAT_INSTRUCTIONS, diffTopics, followUpToMarkdown, hasNews, newsToMarkdown } from "./topicDiff";
 import { enqueueActions } from "./actions";
 import { agendaToMarkdown, calendarWindow, fetchEvents, type CalendarEvent } from "./calendar";
 import { analyzeCorpus, type ExtractedAction } from "./claude";
@@ -163,6 +165,8 @@ async function doRunBriefing(settings: Settings, profile: BriefProfile, opts: { 
     void saveBriefingRun(run);
   };
 
+  if (profile.mode === "localFolder") return runLocalBrief(settings, profile, run, log, opts);
+
   try {
     // 1) Collecte
     const { data, degraded: collectDegraded } = await collect(settings, profile, opts.interactive, log);
@@ -200,6 +204,7 @@ async function doRunBriefing(settings: Settings, profile: BriefProfile, opts: { 
       run.notebookId = id;
       await saveBriefingRun(run);
       await trackBriefNotebook(id, profile.id);
+      await setLastPodcast({ notebookId: id, title, profileName: profile.name, createdAt: new Date().toISOString(), status: "generating" });
       if (pendingMemory) await saveMemory(profile.id, pendingMemory);
     });
     run.notebookId = notebookId;
@@ -318,6 +323,130 @@ export async function buildSources(
   return { sources, actions };
 }
 
+// ─── Mode « Dossier local » (fichiers écrits par Claude Cowork) ───────────────
+
+const processedKey = (profileId: string) => `inboxProcessed:${profileId}`;
+
+export async function processedIds(profileId: string): Promise<string[]> {
+  const k = processedKey(profileId);
+  return ((await chrome.storage.local.get(k))[k] as string[] | undefined) ?? [];
+}
+
+async function markProcessed(profileId: string, id: string): Promise<void> {
+  const list = (await processedIds(profileId)).filter((x) => x !== id);
+  list.push(id);
+  await chrome.storage.local.set({ [processedKey(profileId)]: list.slice(-60) });
+}
+
+/**
+ * Lit le dossier → diff jour après jour → notebook + podcast.
+ * Automatique (heure / surveillance) : un même `id` n'est jamais traité deux fois, un dépôt trop
+ * ancien est ignoré. Manuel : retraitement autorisé (action explicite), signalé dans l'historique.
+ */
+async function runLocalBrief(settings: Settings, profile: BriefProfile, run: BriefingRun, log: Logger, opts: { interactive: boolean }): Promise<BriefingRun> {
+  try {
+    const { manifest, files } = await readInbox(settings, profile.localFolder.manifestFile);
+    log(`Dépôt « ${manifest.id} » lu (${manifest.topics.length} sujet(s), ${files.length} fichier(s))`);
+
+    const already = (await processedIds(profile.id)).includes(manifest.id);
+    if (already && !opts.interactive) {
+      log("Ce dépôt a déjà été traité — en attente du prochain.", "info");
+      return finish(run, "partial");
+    }
+    if (already) log("Dépôt déjà traité : nouvelle génération demandée manuellement.", "warn");
+    const ageH = (Date.now() - Date.parse(manifest.generatedAt)) / 3_600_000;
+    if (!opts.interactive && ageH > profile.lookbackHours) {
+      log(`Dernier dépôt trop ancien (${Math.round(ageH)} h > ${profile.lookbackHours} h) — vérifie la tâche planifiée Cowork.`, "warn");
+      notify(`${profile.name} : pas de dépôt récent`, "Le dossier local n'a pas été mis à jour par Claude Cowork.");
+      return finish(run, "partial");
+    }
+
+    // Diff quotidien : seul ce qui est nouveau ou a changé est développé
+    const today = localDay();
+    const { diff, memory } = diffTopics(await getMemory(profile.id), manifest.topics, today);
+    if (manifest.topics.length) {
+      log(`Suivi : ${diff.fresh.length} nouveau(x), ${diff.changed.length} modifié(s), ${diff.unchanged.length} sans nouveauté, ${diff.resolved.length} résolu(s)`);
+    }
+
+    const mask = (t: string) => (settings.claude.redactPII ? redact(t, { amounts: settings.claude.redactAmounts }) : t);
+    const date = formatDateFR();
+    const sources: SourcePayload[] = [];
+    const news = newsToMarkdown(diff);
+    if (news) sources.push({ type: "text", title: `Nouveautés & mises à jour — ${date}`, text: mask(news) });
+    for (const f of files) sources.push({ type: "text", title: `${f.title} — ${date}`, text: mask(f.text) });
+    const follow = followUpToMarkdown(diff);
+    if (follow) sources.push({ type: "text", title: `Suivi des sujets ouverts — ${date}`, text: mask(follow) });
+
+    if (!hasNews(diff) && files.length === 0) {
+      log("Rien de nouveau depuis le dernier brief — pas de podcast généré (aucune redite).", "warn");
+      await saveMemory(profile.id, memory);
+      await markProcessed(profile.id, manifest.id);
+      notify(`${profile.name} : rien de nouveau`, "Aucun sujet nouveau ou modifié depuis le dernier brief.");
+      return finish(run, "success");
+    }
+
+    if (manifest.actions.length && profile.extractActions) {
+      const added = await enqueueActions(manifest.actions, profile.id, run.id);
+      if (added.length) {
+        log(`${added.length} action(s) à valider avant envoi au backlog`);
+        notify(`✅ ${added.length} action(s) à valider`, "Ouvre Notebooker › Actions pour les envoyer au backlog Notion.", chrome.runtime.getURL("options.html#actions"));
+      }
+    }
+
+    const audio: AudioOptions = { ...profile.audio, ...(manifest.audio ?? {}) };
+    audio.instructions = [audio.instructions, NO_REPEAT_INSTRUCTIONS].filter(Boolean).join(" ");
+    const title = manifest.title || profile.notebookTitleTemplate.replace("{date}", date);
+
+    const { notebookId, added, audioStarted } = await createNotebookWithAudio(title, sources, audio, log, async (id) => {
+      run.notebookId = id;
+      await saveBriefingRun(run);
+      await trackBriefNotebook(id, profile.id);
+      await setLastPodcast({ notebookId: id, title, profileName: profile.name, createdAt: new Date().toISOString(), status: "generating" });
+      // Mémoire et anti-doublon enregistrés dès que le notebook existe
+      await saveMemory(profile.id, memory);
+      await markProcessed(profile.id, manifest.id);
+    });
+    run.notebookId = notebookId;
+    run.sourcesCount = added;
+    let degraded = added < sources.length;
+    if (audioStarted) await chrome.alarms.create(`audio:${notebookId}`, { delayInMinutes: 4, periodInMinutes: 3 });
+    else {
+      degraded = true;
+      notify(`${profile.name} prêt (sans audio)`, "Le notebook est créé ; lance l'Audio Overview manuellement.", await notebookUrl(notebookId));
+    }
+    await applyRetention(profile, log);
+    return finish(run, degraded ? "partial" : "success");
+  } catch (e) {
+    log(msg(e), "error");
+    if (!opts.interactive) notify(`${profile.name} : échec`, msg(e));
+    return finish(run, "error");
+  }
+}
+
+// ─── Dernier podcast ──────────────────────────────────────────────────────────
+
+export interface LastPodcast {
+  notebookId: string;
+  title: string;
+  profileName: string;
+  createdAt: string;
+  status: "generating" | "ready" | "unknown";
+}
+
+async function setLastPodcast(p: LastPodcast): Promise<void> {
+  await chrome.storage.local.set({ lastPodcast: p });
+}
+
+async function updateLastPodcast(notebookId: string, status: LastPodcast["status"]): Promise<void> {
+  const { lastPodcast } = (await chrome.storage.local.get("lastPodcast")) as { lastPodcast?: LastPodcast };
+  if (lastPodcast?.notebookId === notebookId) await setLastPodcast({ ...lastPodcast, status });
+}
+
+export async function getLastPodcast(): Promise<LastPodcast | null> {
+  const { lastPodcast } = (await chrome.storage.local.get("lastPodcast")) as { lastPodcast?: LastPodcast };
+  return lastPodcast ?? null;
+}
+
 // ─── Suivi de génération audio ────────────────────────────────────────────────
 
 const AUDIO_MAX_CHECKS = 12;
@@ -335,10 +464,12 @@ export async function onAudioAlarm(notebookId: string, check: (id: string) => Pr
   if (status === "ready") {
     await chrome.alarms.clear(`audio:${notebookId}`);
     await chrome.storage.local.remove(key);
+    await updateLastPodcast(notebookId, "ready");
     notify("🎧 Ton podcast est prêt", "Clique pour l'écouter dans NotebookLM.", url);
   } else if (n >= AUDIO_MAX_CHECKS) {
     await chrome.alarms.clear(`audio:${notebookId}`);
     await chrome.storage.local.remove(key);
+    await updateLastPodcast(notebookId, "unknown");
     notify("Notebooker", "Le notebook est prêt ; l'audio n'a pas été confirmé — vérifie dans NotebookLM.", url);
   }
 }

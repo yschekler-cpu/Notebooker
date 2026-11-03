@@ -9,6 +9,7 @@ export type DriverCommand =
   | { cmd: "addSource"; source: SourcePayload }
   | { cmd: "generateAudio"; audio: import("./types").AudioOptions }
   | { cmd: "audioStatus" }
+  | { cmd: "playAudio" }
   | { cmd: "deleteNotebook"; notebookId: string };
 
 export type DriverResponse<T = unknown> = { ok: true; data: T } | { ok: false; error: string };
@@ -25,6 +26,13 @@ export type BackgroundRequest =
   | { type: "testGmail" }
   | { type: "testClaude" }
   | { type: "testCalendar" }
+  /** Dossier local (Claude Cowork) */
+  | { type: "checkInboxNow" }
+  | { type: "inspectInbox"; profileId?: string }
+  | { type: "fileAccessStatus" }
+  /** Dernier podcast généré */
+  | { type: "getLastPodcast" }
+  | { type: "playLastPodcast" }
   /** Connexion Notion OAuth : ouverture du flux d'autorisation ou déconnexion (révocation). */
   | { type: "notionOAuth"; op: "connect" | "disconnect"; workspace: "personal" | "company" }
   | { type: "inspectBacklog" }

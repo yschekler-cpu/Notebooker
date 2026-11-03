@@ -1,6 +1,7 @@
 import { classify } from "../background/classify";
 import type { NotebookSummary } from "../shared/messages";
 import { exportOrganization, importOrganization } from "../shared/org";
+import { buildCoworkPrompt } from "../shared/coworkPrompt";
 import { PROFILE_TEMPLATES, normalizeProfile } from "../shared/profiles";
 import { DAY_LABELS } from "../shared/schedule";
 import { getActions, getBriefingRuns, getFolders, getNotebookMetas, getSettings, getSubscriptions, saveSettings, uid } from "../shared/storage";
@@ -28,6 +29,8 @@ async function send<T>(msg: unknown): Promise<T> {
 
 function fill(s: Settings): void {
   $<HTMLTextAreaElement>("x_exclusions").value = s.compliance.gmailExclusions.join("\n");
+  $("li_path").value = s.localInbox.path;
+  $("li_poll").value = String(s.localInbox.pollMinutes);
   $<HTMLTextAreaElement>("k_ids").value = s.calendar.calendarIds.join("\n");
   $("k_private").checked = s.calendar.hidePrivateEvents;
   $("k_declined").checked = s.calendar.skipDeclined;
@@ -55,6 +58,7 @@ function read(prev: Settings): Settings {
     ...prev,
     profiles: prev.profiles.map((p) => (p.id === currentProfileId ? readProfile(p) : p)),
     compliance: { gmailExclusions: lines("x_exclusions") },
+    localInbox: { path: $("li_path").value.trim(), pollMinutes: Math.min(120, Math.max(5, Number($("li_poll").value) || 10)) },
     calendar: { calendarIds: lines("k_ids").length ? lines("k_ids") : ["primary"], hidePrivateEvents: $("k_private").checked, skipDeclined: $("k_declined").checked },
     backlog: { workspace: $<HTMLSelectElement>("bl_ws").value as "personal" | "company", databaseId: $("bl_db").value.trim(), defaultStatus: $("bl_status").value.trim() },
     notion: {
@@ -140,6 +144,10 @@ function fillProfile(p: BriefProfile): void {
   $<HTMLTextAreaElement>("p_audio").value = p.audio.instructions;
   $<HTMLTextAreaElement>("p_focus").value = p.synthesisFocus;
   $("p_memory").checked = p.memory;
+  $<HTMLSelectElement>("p_mode").value = p.mode;
+  $("p_manifest").value = p.localFolder.manifestFile;
+  $("p_watch").checked = p.localFolder.watch;
+  toggleProfileMode();
   $("p_actions").checked = p.extractActions;
   const next = nextRuns[p.id];
   $("p_next").textContent = !p.enabled ? "Profil inactif." : next ? `Prochain passage : ${new Date(next).toLocaleString("fr-FR")}` : "Enregistre pour planifier.";
@@ -169,7 +177,16 @@ function readProfile(prev: BriefProfile): BriefProfile {
     synthesisFocus: $<HTMLTextAreaElement>("p_focus").value.trim(),
     memory: $("p_memory").checked,
     extractActions: $("p_actions").checked,
+    mode: $<HTMLSelectElement>("p_mode").value === "localFolder" ? "localFolder" : "connectors",
+    localFolder: { manifestFile: $("p_manifest").value.trim() || "latest.json", watch: $("p_watch").checked },
   });
+}
+
+/** Mode « dossier local » : masque les sources connecteurs, affiche les réglages du dossier. */
+function toggleProfileMode(): void {
+  const local = $<HTMLSelectElement>("p_mode").value === "localFolder";
+  document.querySelectorAll<HTMLElement>(".conn-only").forEach((el) => (el.hidden = local));
+  document.querySelectorAll<HTMLElement>(".local-only").forEach((el) => (el.hidden = !local));
 }
 
 function renderProfileSelect(s: Settings): void {
@@ -463,6 +480,34 @@ async function init(): Promise<void> {
     void renderActions();
   };
 
+  // Dossier local : mode du profil, accès fichiers, prompt Cowork
+  $<HTMLSelectElement>("p_mode").addEventListener("change", toggleProfileMode);
+  void send<boolean>({ type: "fileAccessStatus" })
+    .then((ok) => {
+      const el = $("li_access");
+      el.className = `oauth-status${ok ? " on" : ""}`;
+      el.textContent = ok ? "Accès aux fichiers locaux autorisé" : "Accès aux fichiers non autorisé — active « Autoriser l'accès aux URL de fichier » (étape 1 ci-dessous)";
+    })
+    .catch(() => undefined);
+  $("li_prompt").onclick = async () => {
+    settings = read(settings);
+    const p = settings.profiles.find((x) => x.id === currentProfileId)!;
+    const prompt = buildCoworkPrompt({
+      folder: settings.localInbox.path,
+      manifestFile: p.localFolder.manifestFile,
+      profileName: p.name,
+      lookbackHours: p.lookbackHours,
+      exclusions: settings.compliance.gmailExclusions,
+      focus: p.synthesisFocus,
+    });
+    try {
+      await navigator.clipboard.writeText(prompt);
+      say(`Prompt Cowork copié pour « ${p.name} » (${prompt.split("\n").length} lignes) — colle-le dans la tâche planifiée.`, "ok");
+    } catch {
+      say("Copie impossible — le prompt est aussi dans docs/COWORK-PROMPT.md.", "warn");
+    }
+  };
+
   // Notion : bascule jeton / OAuth, URI de redirection, connexion / déconnexion
   (["p", "c"] as const).forEach((k) => {
     $<HTMLSelectElement>(`n_${k}_mode`).addEventListener("change", () => toggleNotionMode(k));
@@ -513,6 +558,7 @@ async function init(): Promise<void> {
         : t === "gmail" ? { type: "testGmail" }
         : t === "calendar" ? { type: "testCalendar" }
         : t === "backlog" ? { type: "inspectBacklog" }
+        : t === "inbox" ? { type: "inspectInbox", profileId: settings.profiles.find((p) => p.id === currentProfileId && p.mode === "localFolder")?.id }
         : { type: "testClaude" };
       say("Test en cours…");
       try {

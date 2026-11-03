@@ -1,0 +1,39 @@
+import { describe, expect, it } from "vitest";
+import { buildCoworkPrompt } from "../src/shared/coworkPrompt";
+import { PROFILE_TEMPLATES, normalizeProfile } from "../src/shared/profiles";
+
+describe("prompt Claude Cowork", () => {
+  const prompt = buildCoworkPrompt({ folder: "/Users/yann/Notebooker", manifestFile: "conformite.json", profileName: "Récap conformité", lookbackHours: 168, exclusions: ["label:kyc", "notifications@dotfile.com"], focus: "Angle LCB-FT" });
+  it("personnalisé : dossier, manifest, fenêtre, exclusions, angle", () => {
+    expect(prompt).toContain("`/Users/yann/Notebooker`");
+    expect(prompt).toContain("lis `conformite.json` existant");
+    expect(prompt).toContain("168 dernières heures");
+    expect(prompt).toContain("   - label:kyc\n   - notifications@dotfile.com");
+    expect(prompt).toContain("**Angle demandé** : Angle LCB-FT");
+    expect(prompt).toContain('"id": "AAAA-MM-JJ-conformite"');
+  });
+  it("contient les règles anti-redite et de conformité", () => {
+    expect(prompt).toMatch(/recopie \*\*mot pour mot\*\*/);
+    expect(prompt).toMatch(/uniquement ce qui a changé/);
+    expect(prompt).toMatch(/Jamais d'IBAN/);
+    expect(prompt).toMatch(/\*\*En dernier\*\*, `conformite.json`/);
+  });
+  it("sans exclusions : demande explicite avant de commencer", () => {
+    expect(buildCoworkPrompt({ folder: "", manifestFile: "", profileName: "x", lookbackHours: 24, exclusions: [], focus: "" })).toMatch(/demande-moi la liste/);
+  });
+});
+
+describe("profil « dossier local »", () => {
+  it("modèle Cowork : sans connecteurs, surveillance active, actions importées", () => {
+    const p = normalizeProfile({ ...PROFILE_TEMPLATES.cowork!(), id: "c" });
+    expect(p.mode).toBe("localFolder");
+    expect(p.localFolder).toEqual({ manifestFile: "latest.json", watch: true });
+    expect(Object.values(p.sources).every((v) => v === false)).toBe(true);
+    expect(p.extractActions).toBe(true);
+  });
+  it("normalisation : mode inconnu → connecteurs ; manifest invalide → latest.json", () => {
+    const p = normalizeProfile({ id: "x", mode: "cloud" as never, localFolder: { manifestFile: "../../etc/passwd", watch: false } });
+    expect(p.mode).toBe("connectors");
+    expect(p.localFolder).toEqual({ manifestFile: "latest.json", watch: false });
+  });
+});

@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Notebooker — NotebookLM Organizer & Daily Brief",
   "short_name": "Notebooker",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Dossiers/tags pour NotebookLM, sources auto-synchronisées (web, YouTube, RSS, Notion) et podcast de brief quotidien.",
   "minimum_chrome_version": "120",
   "background": {
@@ -31,7 +31,8 @@
     "https://gmail.googleapis.com/*",
     "https://api.notion.com/*",
     "https://api.anthropic.com/*",
-    "https://www.googleapis.com/*"
+    "https://www.googleapis.com/*",
+    "file:///*"
   ],
   "optional_host_permissions": [
     "https://*/*",

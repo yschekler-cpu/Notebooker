@@ -96,10 +96,24 @@ export interface AudioOptions {
   instructions: string;
 }
 
+export type CollectionMode = "connectors" | "localFolder";
+
 export interface BriefProfile {
   id: string;
   name: string;
   enabled: boolean;
+  /**
+   * « connectors » : l'extension collecte elle-même (Gmail, Agenda, Notion, Claude).
+   * « localFolder » : un agent externe (Claude Cowork planifié) écrit les fichiers ; l'extension
+   * lit le dossier, calcule le diff jour après jour et génère le podcast. Aucun connecteur requis.
+   */
+  mode: CollectionMode;
+  localFolder: {
+    /** Manifest du profil dans le dossier (ex. latest.json, conformite.json). */
+    manifestFile: string;
+    /** Déclenche le brief dès qu'un nouveau manifest est déposé (en plus / à la place de l'heure fixe). */
+    watch: boolean;
+  };
   schedule: {
     /** Heure locale HH:MM. */
     time: string;
@@ -129,6 +143,13 @@ export interface BriefProfile {
 
 export interface Settings {
   profiles: BriefProfile[];
+  /** Dossier local alimenté par Claude Cowork (mode « localFolder »). */
+  localInbox: {
+    /** Chemin absolu (ex. /Users/prenom/Notebooker ou C:\\Users\\prenom\\Notebooker). */
+    path: string;
+    /** Fréquence de surveillance du dossier (minutes). */
+    pollMinutes: number;
+  };
   /** Règles de conformité communes à TOUS les profils (non contournables profil par profil). */
   compliance: {
     /** Expéditeurs / domaines / labels exclus (ex. notifications@dotfile.com, label:kyc). */
@@ -214,6 +235,11 @@ export interface MemoryTopic {
   lastSeen: string;
   /** Nombre de briefs (jours distincts) où le sujet était actif. */
   activeDays: number;
+  /** Empreinte du dernier contenu (mode dossier local) : détecte « inchangé » vs « mis à jour ». */
+  fingerprint?: string;
+  /** Dernier jour où le contenu a réellement changé. */
+  lastChanged?: string;
+  resolved?: boolean;
 }
 
 export interface BriefMemory {

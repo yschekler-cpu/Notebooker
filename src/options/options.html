@@ -35,7 +35,7 @@
     <button class="primary" id="save">Enregistrer</button>
   </div>
   <nav class="nav" aria-label="Sections">
-    <a href="#actions">Actions</a><a href="#profiles">Profils</a><a href="#compliance">Conformité</a>
+    <a href="#actions">Actions</a><a href="#profiles">Profils</a><a href="#inbox">Dossier local</a><a href="#compliance">Conformité</a>
     <a href="#calendar">Agenda</a><a href="#backlog">Backlog</a><a href="#notion">Notion</a><a href="#claude">Claude</a>
     <a href="#notebooklm">NotebookLM</a><a href="#subscriptions">Abonnements</a><a href="#organisation">Organisation</a><a href="#history">Historique</a>
   </nav>
@@ -61,6 +61,7 @@
         <option value="daily">Modèle : brief du matin</option>
         <option value="weeklyCompliance">Modèle : récap conformité (vendredi)</option>
         <option value="comex">Modèle : digest Comex (lundi)</option>
+        <option value="cowork">Modèle : brief Cowork (dossier local)</option>
       </select>
       <button id="p_new">+ Nouveau</button>
       <button id="p_dup">Dupliquer</button>
@@ -77,6 +78,20 @@
     <div class="days" id="p_days"></div>
     <p class="hint" id="p_next"></p>
 
+    <h3>Collecte</h3>
+    <label for="p_mode">Mode de collecte</label>
+    <select id="p_mode">
+      <option value="connectors">Connecteurs de l'extension (Gmail, Agenda, Notion, Claude)</option>
+      <option value="localFolder">Dossier local — fichiers écrits par Claude Cowork</option>
+    </select>
+    <div class="local-only" hidden>
+      <div class="grid">
+        <div><label for="p_manifest">Fichier manifest dans le dossier</label><input type="text" id="p_manifest" placeholder="latest.json" spellcheck="false" /></div>
+      </div>
+      <label class="inline"><input type="checkbox" id="p_watch" /> Générer dès qu'un nouveau brief est déposé (surveillance du dossier)</label>
+      <div class="hint">Aucun connecteur requis : Claude Cowork agrège Gmail, Agenda et Notion ; l'extension lit le dossier, calcule le diff jour après jour (nouveau / modifié / sans nouveauté / résolu) et génère le podcast. L'heure ci-dessus sert de filet de sécurité.</div>
+    </div>
+    <div class="conn-only">
     <h3>Sources</h3>
     <div class="checks">
       <label class="inline"><input type="checkbox" id="p_src_gmail" /> Gmail</label>
@@ -87,6 +102,7 @@
     <div class="grid">
       <div><label>Requête Gmail</label><input type="text" id="p_query" /><div class="hint">Syntaxe Gmail. <code>newer_than</code> et les exclusions de conformité sont ajoutés automatiquement.</div></div>
       <div><label>Nb max d'emails</label><input type="number" id="p_max" min="1" max="200" /></div>
+    </div>
     </div>
 
     <h3>Notebook & podcast</h3>
@@ -109,6 +125,25 @@
     <label class="inline"><input type="checkbox" id="p_actions" /> <span>Extraire les actions qui me sont adressées → validation → backlog Notion <span class="hint" style="display:inline">· requiert Claude</span></span></label>
     <div class="actions"><button class="primary" id="p_run">Lancer ce profil maintenant</button></div>
     <div class="alert">Chrome doit être ouvert à l'heure prévue. Sinon le brief est rattrapé au démarrage de Chrome (jusqu'à midi, ou 4 h après un créneau d'après-midi).</div>
+  </section>
+
+  <section class="card" id="inbox">
+    <h2><span class="ico" style="--tint:var(--teal)"><svg><use href="#i-folder"/></svg></span>Dossier local <span class="hint" style="margin:0;font-weight:500">· Claude Cowork</span></h2>
+    <p class="section-sub">Pour les profils en mode « Dossier local » : une tâche planifiée Claude Cowork écrit le brief dans ce dossier, l'extension le lit et génère le podcast.</p>
+    <div class="grid">
+      <div><label for="li_path">Chemin complet du dossier</label><input type="text" id="li_path" placeholder="/Users/prenom/Notebooker  ·  C:\Users\prenom\Notebooker" spellcheck="false" /></div>
+      <div><label for="li_poll">Surveillance (minutes)</label><input type="number" id="li_poll" min="5" max="120" /></div>
+    </div>
+    <div class="oauth-status" id="li_access">Vérification de l'accès aux fichiers…</div>
+    <div class="actions">
+      <button data-test="inbox">Tester la lecture</button>
+      <button class="primary" id="li_prompt">Copier le prompt Cowork</button>
+    </div>
+    <div class="glass-inset">
+      <b>Mise en place</b> — 1. chrome://extensions › Notebooker › Détails › activer <i>« Autoriser l'accès aux URL de fichier »</i>.
+      2. Crée le dossier, puis dans Claude (Cowork) donne-lui accès à ce dossier et crée une <i>tâche planifiée</i> (ex. 7 h 00, jours ouvrés) avec le prompt copié.
+      3. Ici : profil en mode « Dossier local », actif, surveillance activée. Le prompt contient tes exclusions de conformité.
+    </div>
   </section>
 
   <section class="card" id="compliance">

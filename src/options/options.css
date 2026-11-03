@@ -428,3 +428,19 @@ body.popup label { margin-top: 10px; }
 .copy-row { display: flex; gap: 8px; align-items: center; margin: 8px 0; min-width: 0; }
 .copy-row code { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 7px 10px; background: var(--field); border: 1px solid var(--field-border); border-radius: var(--r-sm); font-size: 12.5px; color: var(--text); }
 .copy-row button { flex: none; padding: 6px 14px; }
+
+/* ─── Popup : dernier podcast ─────────────────────────────────────────────── */
+.podcast-row { display: flex; align-items: center; gap: 12px; margin-top: 8px; }
+.podcast-meta { flex: 1; min-width: 0; }
+.podcast-title { font-weight: 600; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.podcast-sub { display: flex; align-items: center; gap: 8px; margin-top: 3px; font-size: 12px; color: var(--text-2); }
+.pill { padding: 1px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; background: var(--fill); color: var(--text-2); }
+.pill.ready { background: color-mix(in srgb, var(--green) 18%, transparent); color: var(--ok); }
+.pill.generating { background: color-mix(in srgb, var(--orange) 18%, transparent); color: var(--warn); }
+button.play {
+  width: 46px; height: 46px; flex: none; padding: 0; border-radius: 50%; display: grid; place-items: center; border: none; color: #fff;
+  background: linear-gradient(160deg, #c07bff, var(--purple) 55%, #7d3cc8);
+  box-shadow: 0 6px 18px color-mix(in srgb, var(--purple) 45%, transparent), inset 0 1px 0 rgba(255, 255, 255, .45);
+}
+button.play svg { width: 20px; height: 20px; margin-left: 3px; }
+button.play:hover { filter: brightness(1.06); background: linear-gradient(160deg, #c07bff, var(--purple) 55%, #7d3cc8); }

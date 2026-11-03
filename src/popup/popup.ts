@@ -69,6 +69,8 @@ async function init(): Promise<void> {
     }
   };
 
+  await renderPodcast();
+
   const settings = await getSettings();
   $<HTMLSelectElement>("briefProfile").innerHTML = settings.profiles
     .map((p) => `<option value="${escapeHtml(p.id)}">${p.enabled ? "●" : "○"} ${escapeHtml(p.name)}</option>`)
@@ -98,6 +100,37 @@ async function init(): Promise<void> {
 /** Clé stable d'une cible (l'index change quand l'ordre des notebooks change). */
 function targetKey(t: Target): string {
   return t.kind === "notebooklm" ? `nb:${t.notebookId}` : `notion:${t.workspace}:${t.databaseId}`;
+}
+
+interface LastPodcast {
+  notebookId: string;
+  title: string;
+  profileName: string;
+  createdAt: string;
+  status: "generating" | "ready" | "unknown";
+}
+
+const STATUS_LABEL: Record<LastPodcast["status"], string> = { ready: "Prêt", generating: "En génération", unknown: "À vérifier" };
+
+async function renderPodcast(): Promise<void> {
+  const last = await send<LastPodcast | null>({ type: "getLastPodcast" }).catch(() => null);
+  if (!last) return;
+  $("podcastCard").hidden = false;
+  $("podcastTitle").textContent = last.title;
+  $("podcastTitle").title = last.title;
+  const pill = $("podcastStatus");
+  pill.textContent = STATUS_LABEL[last.status];
+  pill.className = `pill ${last.status}`;
+  $("podcastDate").textContent = `${last.profileName} · ${new Date(last.createdAt).toLocaleString("fr-FR", { dateStyle: "short", timeStyle: "short" })}`;
+  $("podcastPlay").onclick = async () => {
+    status("Ouverture du podcast…");
+    try {
+      const r = await send<{ status: string }>({ type: "playLastPodcast" });
+      status(r.status === "playing" ? "▶ Lecture lancée dans NotebookLM." : r.status === "not_ready" ? "Podcast pas encore prêt — le notebook est ouvert." : "Notebook ouvert.");
+    } catch (e) {
+      status(String(e instanceof Error ? e.message : e));
+    }
+  };
 }
 
 function escapeHtml(s: string): string {

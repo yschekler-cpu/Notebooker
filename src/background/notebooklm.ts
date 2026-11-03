@@ -201,6 +201,29 @@ export function audioStatus(notebookId: string): Promise<"ready" | "generating" 
   });
 }
 
+/**
+ * Ouvre le notebook au premier plan (onglet conservé, contrairement aux onglets d'automatisation)
+ * et lance la lecture de l'Audio Overview.
+ */
+export async function playPodcast(notebookId: string): Promise<{ status: "playing" | "opened" | "not_ready"; url: string }> {
+  const url = await notebookUrl(notebookId);
+  const tab = await chrome.tabs.create({ url, active: true });
+  if (tab.id === undefined) return { status: "opened", url };
+  const tabId = tab.id;
+  const send = (c: DriverCommand) => chrome.tabs.sendMessage(tabId, { __driver: c }) as Promise<DriverResponse<"playing" | "not_ready"> | undefined>;
+  const start = Date.now();
+  while (Date.now() - start < 30_000) {
+    try {
+      const r = await send({ cmd: "playAudio" });
+      if (r?.ok) return { status: r.data, url };
+      break;
+    } catch {
+      await new Promise((res) => setTimeout(res, 1000)); // content script pas encore prêt
+    }
+  }
+  return { status: "opened", url };
+}
+
 export function deleteNotebook(notebookId: string): Promise<void> {
   return enqueue(async () => {
     const s = await NotebookSession.open();

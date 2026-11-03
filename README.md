@@ -115,6 +115,30 @@ Le manifest contient une clé publique (`key`) qui **fige l'ID de l'extension** 
 
 Les réglages existants sont migrés automatiquement au premier chargement : l'ancien brief devient le profil « Brief du matin » (heure, jours, fenêtre, consignes audio, rétention conservés) et ses exclusions Gmail deviennent les **exclusions de conformité** communes. Après la mise à jour, Chrome redemande le consentement Google pour ajouter le scope Agenda.
 
+## Mode « Dossier local » (Claude Cowork)
+
+Alternative sans aucun connecteur côté extension : **Claude Cowork** (tâche planifiée) agrège Gmail, Agenda et Notion et écrit le brief dans un dossier du poste ; **l'extension lit ce dossier, calcule le diff et génère le podcast** dans NotebookLM.
+
+```
+Claude Cowork (7 h 00, planifié)          Notebooker (surveillance toutes les 10 min)
+  Gmail · Agenda · Notion                    lit latest.json (nouvel id ?)
+  relit le brief précédent (clés stables)    diff vs mémoire : 🆕 / 🔄 / ⏸️ / ✅ / 💤
+  écrit AAAA-MM-JJ/agenda.md                 → notebook + sources + Audio Overview
+  écrit latest.json (en dernier)             → notification · « Dernier podcast » dans la popup
+```
+
+| Élément | Détail |
+|---|---|
+| Contrat | `latest.json` au format `notebooker-brief` v1 : `id` unique, `generatedAt`, `topics[]` (clé stable, statut, résumé), `sources[]` (fichiers `.md` relatifs), `actions[]` optionnelles. Spécification : `src/background/localInbox.ts`. |
+| Prompt Cowork | Réglages › Dossier local › **Copier le prompt Cowork** (personnalisé : dossier, manifest, exclusions de conformité). Version générique : [`docs/COWORK-PROMPT.md`](docs/COWORK-PROMPT.md). |
+| Anti-redite (diff) | Double sécurité : Cowork écrit uniquement ce qui a changé par sujet ; l'extension compare l'empreinte de chaque sujet aux jours précédents. Nouveaux et modifiés → développés ; inchangés → une ligne ; résolus → annoncés une fois ; rien de nouveau → **pas de podcast**. Consigne audio « point d'avancement, pas un récapitulatif ». |
+| Déclenchement | Dès qu'un nouveau dépôt apparaît (surveillance), l'heure du profil servant de filet de sécurité. Un même `id` n'est jamais traité deux fois automatiquement ; un dépôt plus ancien que la fenêtre du profil est ignoré (alerte). |
+| Dernier podcast | Popup › **Dernier podcast** : titre, statut (en génération / prêt), bouton ▶ qui ouvre le notebook et lance la lecture. |
+
+**Mise en place** : (1) `chrome://extensions` › Notebooker › Détails › activer **« Autoriser l'accès aux URL de fichier »** ; (2) créer le dossier, lui donner accès dans Claude Cowork et créer une tâche planifiée avec le prompt copié ; (3) dans Notebooker, renseigner le chemin complet du dossier, créer un profil depuis le modèle **« Brief Cowork (dossier local) »**, l'activer.
+
+**Conformité** : les fichiers du brief sont stockés en clair sur le poste — disque chiffré obligatoire (FileVault / BitLocker), dossier hors synchronisation cloud personnelle ; le prompt impose la pseudonymisation des investisseurs, l'absence d'IBAN / données KYC et la purge à 14 jours. L'extension ne lit que des `.md` / `.txt` à l'intérieur du dossier (chemins relatifs, pas de `..`).
+
 ## Pipeline d'un profil de brief
 
 | Étape | Détail | En cas d'échec |
@@ -168,6 +192,7 @@ Les réglages existants sont migrés automatiquement au premier chargement : l'a
 - [x] Profils de brief (planning, sources, angle, format audio) · mémoire · actions → backlog Notion
 - [ ] « Google Doc vivant » par abonnement (une source unique synchronisée nativement par NotebookLM)
 - [ ] Auto-test quotidien du driver · pré-contrôle des quotas NotebookLM
+- [x] Mode « Dossier local » alimenté par Claude Cowork, diff quotidien, lecture du dernier podcast
 - [ ] Slack dans le brief
 - [x] Drag & drop des cartes vers les dossiers
 - [x] Export / import de l'organisation (JSON)

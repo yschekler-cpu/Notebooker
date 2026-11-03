@@ -20,6 +20,8 @@ export function defaultProfile(id = "daily", name = "Brief du matin"): BriefProf
     id,
     name,
     enabled: false,
+    mode: "connectors",
+    localFolder: { manifestFile: "latest.json", watch: true },
     schedule: { time: "07:30", days: [...WEEKDAYS] },
     lookbackHours: 24,
     sources: { gmail: true, calendar: true, notionPersonal: true, notionCompany: true },
@@ -36,6 +38,18 @@ export function defaultProfile(id = "daily", name = "Brief du matin"): BriefProf
 
 /** Modèles prêts à l'emploi proposés à la création d'un profil. */
 export const PROFILE_TEMPLATES: Record<string, () => Omit<BriefProfile, "id">> = {
+  cowork: () => {
+    const { id: _id, ...p } = defaultProfile("x", "Brief Cowork (dossier local)");
+    return {
+      ...p,
+      mode: "localFolder",
+      localFolder: { manifestFile: "latest.json", watch: true },
+      sources: { gmail: false, calendar: false, notionPersonal: false, notionCompany: false },
+      memory: true,
+      extractActions: true, // actions fournies par Cowork dans le manifest → file de validation
+      audio: { ...DEFAULT_AUDIO, instructions: "Commence par les nouveautés et les mises à jour, puis les réunions du jour. Ne répète pas les sujets sans changement : cite-les seulement en une phrase à la fin." },
+    };
+  },
   daily: () => {
     const { id: _id, ...p } = defaultProfile();
     return p;
@@ -87,6 +101,11 @@ export function normalizeProfile(raw: Partial<BriefProfile> & { id?: string }): 
     name: (raw.name ?? d.name).slice(0, 60) || d.name,
     schedule: { time: /^\d{1,2}:\d{2}$/.test(raw.schedule?.time ?? "") ? raw.schedule!.time : d.schedule.time, days: Array.from(new Set(days)).sort() },
     sources: { ...d.sources, ...(raw.sources ?? {}) },
+    mode: raw.mode === "localFolder" ? "localFolder" : "connectors",
+    localFolder: {
+      manifestFile: /^[\w.-]+\.json$/.test(raw.localFolder?.manifestFile ?? "") ? raw.localFolder!.manifestFile : d.localFolder.manifestFile,
+      watch: raw.localFolder?.watch ?? d.localFolder.watch,
+    },
     audio,
   };
 }

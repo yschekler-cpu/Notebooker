@@ -2,12 +2,13 @@ import type { BackgroundRequest, NotebookSummary } from "../shared/messages";
 import { nextRun, shouldCatchUp } from "../shared/schedule";
 import { getSettings, mutateSubscriptions, uid } from "../shared/storage";
 import type { Subscription, Target } from "../shared/types";
-import { lastSuccessfulRun, notify, onAudioAlarm, runBriefing } from "./briefing";
+import { getLastPodcast, lastSuccessfulRun, notify, onAudioAlarm, processedIds, runBriefing } from "./briefing";
+import { fileAccessAllowed, readInbox, readManifest } from "./localInbox";
 import { dismissActions, inspectBacklog, pushActions } from "./actions";
 import { calendarWindow, fetchEvents } from "./calendar";
 import { testClaude } from "./claude";
 import { fetchRecentMails } from "./gmail";
-import { audioStatus, listNotebooks, notebookUrl } from "./notebooklm";
+import { audioStatus, listNotebooks, notebookUrl, playPodcast } from "./notebooklm";
 import { NotionClient, clean } from "./notion";
 import { connectNotion, disconnectNotion } from "./notionAuth";
 import { classify, requiredOrigin } from "./classify";
@@ -15,6 +16,7 @@ import { refreshDueSubscriptions, refreshSubscriptionNow, withSyncLock } from ".
 
 const ALARM_BRIEFING_PREFIX = "briefing:";
 const ALARM_SYNC = "sync";
+const ALARM_INBOX = "inbox";
 const SYNC_PERIOD_MIN = 15;
 
 // ─── Cycle de vie ─────────────────────────────────────────────────────────────
@@ -41,7 +43,39 @@ async function bootstrap(checkCatchUp = false): Promise<void> {
 }
 
 /** Une alarme one-shot par profil actif, recalculée à chaque run (jours choisis, changements d'heure). */
+/** Surveillance du dossier local : active seulement si un profil actif « dossier local » la demande. */
+async function scheduleInboxWatch(): Promise<void> {
+  const s = await getSettings();
+  const watching = s.profiles.some((p) => p.enabled && p.mode === "localFolder" && p.localFolder.watch);
+  await chrome.alarms.clear(ALARM_INBOX);
+  if (watching && s.localInbox.path.trim()) {
+    await chrome.alarms.create(ALARM_INBOX, { periodInMinutes: Math.max(5, s.localInbox.pollMinutes || 10), delayInMinutes: 1 });
+  }
+}
+
+/** Lance un brief pour chaque profil surveillé dont le manifest a un nouvel id (et récent). */
+async function checkInbox(): Promise<{ profileId: string; id: string; started: boolean; reason?: string }[]> {
+  const s = await getSettings();
+  const out: { profileId: string; id: string; started: boolean; reason?: string }[] = [];
+  for (const p of s.profiles.filter((x) => x.enabled && x.mode === "localFolder" && x.localFolder.watch)) {
+    try {
+      const m = await readManifest(s, p.localFolder.manifestFile);
+      const ageH = (Date.now() - Date.parse(m.generatedAt)) / 3_600_000;
+      if ((await processedIds(p.id)).includes(m.id)) out.push({ profileId: p.id, id: m.id, started: false, reason: "déjà traité" });
+      else if (ageH > p.lookbackHours) out.push({ profileId: p.id, id: m.id, started: false, reason: "trop ancien" });
+      else {
+        out.push({ profileId: p.id, id: m.id, started: true });
+        void runBriefing(p.id, { interactive: false });
+      }
+    } catch (e) {
+      out.push({ profileId: p.id, id: "", started: false, reason: e instanceof Error ? e.message : String(e) });
+    }
+  }
+  return out;
+}
+
 async function scheduleBriefings(): Promise<Record<string, number | null>> {
+  await scheduleInboxWatch();
   const s = await getSettings();
   for (const a of await chrome.alarms.getAll()) if (a.name.startsWith(ALARM_BRIEFING_PREFIX)) await chrome.alarms.clear(a.name);
   const next: Record<string, number | null> = {};
@@ -65,6 +99,8 @@ chrome.alarms.onAlarm.addListener((alarm) => {
     const id = alarm.name.slice(ALARM_BRIEFING_PREFIX.length);
     // Replanifie AVANT d'exécuter : un run bloqué ou un SW tué ne doit pas supprimer le créneau suivant.
     void scheduleBriefing(id).then(() => runBriefing(id, { interactive: false }));
+  } else if (alarm.name === ALARM_INBOX) {
+    void checkInbox();
   } else if (alarm.name === ALARM_SYNC) {
     void refreshDueSubscriptions();
   } else if (alarm.name.startsWith("audio:")) {
@@ -256,6 +292,25 @@ async function handle(req: BackgroundRequest): Promise<unknown> {
       const next = await scheduleBriefings();
       await rebuildContextMenus();
       return next;
+    }
+    case "checkInboxNow":
+      return checkInbox();
+    case "inspectInbox": {
+      const s = await getSettings();
+      const p = s.profiles.find((x) => x.id === req.profileId) ?? s.profiles.find((x) => x.mode === "localFolder");
+      if (!p) throw new Error("Aucun profil en mode « Dossier local ».");
+      const { manifest, files } = await readInbox(s, p.localFolder.manifestFile);
+      const done = (await processedIds(p.id)).includes(manifest.id);
+      return `Dépôt « ${manifest.id} » du ${new Date(manifest.generatedAt).toLocaleString("fr-FR")} : ${manifest.topics.length} sujet(s), ${files.length} fichier(s)${manifest.actions.length ? `, ${manifest.actions.length} action(s)` : ""}${done ? " — déjà traité" : " — prêt à traiter"}`;
+    }
+    case "fileAccessStatus":
+      return fileAccessAllowed();
+    case "getLastPodcast":
+      return getLastPodcast();
+    case "playLastPodcast": {
+      const last = await getLastPodcast();
+      if (!last) throw new Error("Aucun podcast généré pour l'instant.");
+      return playPodcast(last.notebookId);
     }
     case "notionOAuth":
       return req.op === "connect" ? connectNotion(req.workspace) : disconnectNotion(req.workspace);

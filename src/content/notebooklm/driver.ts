@@ -38,6 +38,8 @@ export async function handleCommand(c: DriverCommand): Promise<DriverResponse> {
         return ok(await generateAudio(c.audio));
       case "audioStatus":
         return ok(audioStatus());
+      case "playAudio":
+        return ok(await playAudio());
       case "deleteNotebook":
         await deleteNotebook(c.notebookId);
         return ok(true);
@@ -217,6 +219,25 @@ async function generateAudio(audio: AudioOptions): Promise<AudioReport> {
 
   await click(LABELS.audioGenerate, dlg);
   return report;
+}
+
+/** Lance la lecture du podcast (bouton Lecture de la carte Audio Overview, sinon l'élément <audio>). */
+async function playAudio(): Promise<"playing" | "not_ready"> {
+  const card = await waitFor(() => audioCard(), 20_000).catch(() => null);
+  if (!card) return "not_ready";
+  const btn = findClickable(LABELS.audioPlay, card, { exactOnly: true });
+  if (btn) {
+    btn.click();
+    return "playing";
+  }
+  const el = card.querySelector<HTMLAudioElement>("audio");
+  if (!el) return "not_ready";
+  try {
+    await el.play();
+  } catch {
+    /* autoplay bloqué : le lecteur est affiché, un clic suffit */
+  }
+  return "playing";
 }
 
 export function audioStatus(): "ready" | "generating" | "none" {
