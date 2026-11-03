@@ -63,7 +63,7 @@ export class NotebookSession {
         await new Promise((res) => setTimeout(res, 1000));
       }
     }
-    throw new Error("NotebookLM ne répond pas — vérifie que tu es connecté à notebooklm.google.com avec le bon compte Google.");
+    throw new Error("NotebookLM ne répond pas — vérifie que tu es connecté à NotebookLM (notebook.google.com) avec le bon compte Google.");
   }
 
   async send<T>(command: DriverCommand): Promise<T> {

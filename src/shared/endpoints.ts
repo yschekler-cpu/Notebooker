@@ -6,7 +6,13 @@
 declare const __E2E_BASE__: string;
 const E2E: string = typeof __E2E_BASE__ === "string" ? __E2E_BASE__ : "";
 
-export const NOTEBOOKLM_ORIGIN = E2E || "https://notebooklm.google.com";
+/**
+ * NotebookLM a migré de notebooklm.google.com vers notebook.google.com (l'ancien domaine redirige).
+ * Le nouveau domaine est la cible principale ; les deux restent couverts par le content script.
+ */
+export const NOTEBOOKLM_ORIGIN = E2E || "https://notebook.google.com";
+/** Domaines NotebookLM reconnus (actuel + historique). */
+export const NOTEBOOKLM_HOSTS = ["notebook.google.com", "notebooklm.google.com"];
 export const NOTION_API = E2E ? `${E2E}/notion/v1` : "https://api.notion.com/v1";
 /** undefined = valeur par défaut du SDK Anthropic. */
 export const ANTHROPIC_BASE_URL: string | undefined = E2E ? `${E2E}/anthropic` : undefined;
