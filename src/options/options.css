@@ -417,3 +417,14 @@ body.popup label { margin-top: 10px; }
 }
 .settings-link:hover { text-decoration: none; background: var(--glass-strong); }
 .settings-link .chev { color: var(--text-3); font-size: 18px; }
+
+/* ─── Notion : modes d'authentification ───────────────────────────────────── */
+.ws { min-width: 0; }
+.oauth-status { margin-top: 10px; font-size: 13px; display: flex; align-items: center; gap: 8px; }
+.oauth-status::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--gray); flex: none; }
+.oauth-status.on::before { background: var(--green); box-shadow: 0 0 0 3px color-mix(in srgb, var(--green) 25%, transparent); }
+.glass-inset { margin-top: 16px; padding: 12px 14px; border-radius: var(--r-md); background: var(--fill); font-size: 13px; color: var(--text-2); line-height: 1.55; }
+.glass-inset b { color: var(--text); }
+.copy-row { display: flex; gap: 8px; align-items: center; margin: 8px 0; min-width: 0; }
+.copy-row code { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 7px 10px; background: var(--field); border: 1px solid var(--field-border); border-radius: var(--r-sm); font-size: 12.5px; color: var(--text); }
+.copy-row button { flex: none; padding: 6px 14px; }

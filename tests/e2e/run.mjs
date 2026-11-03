@@ -38,6 +38,7 @@ const NOTION_PAGE = "0123456789abcdef0123456789abcdef";
 const notionCalls = [];
 const claudeCalls = [];
 const googleCalls = [];
+const oauthCalls = [];
 const backlogPages = [];
 const BACKLOG_DB = "fedcba9876543210fedcba9876543210";
 const MAILS = [
@@ -83,7 +84,21 @@ function startMockServer() {
     if (url.pathname.startsWith("/notion/v1/")) {
       const path = url.pathname.slice("/notion".length);
       notionCalls.push({ method: req.method, path, headers: req.headers });
-      if (req.headers.authorization !== "Bearer secret_mock") return json({ object: "error", status: 401, code: "unauthorized" }, 401);
+      // OAuth Notion : page d'autorisation (redirige vers l'extension) + échange / révocation de jeton
+      if (path === "/v1/oauth/authorize") {
+        const redirect = url.searchParams.get("redirect_uri");
+        oauthCalls.push({ step: "authorize", params: Object.fromEntries(url.searchParams) });
+        res.writeHead(302, { location: `${redirect}?code=code_mock&state=${encodeURIComponent(url.searchParams.get("state"))}` });
+        return res.end();
+      }
+      if (path === "/v1/oauth/token" || path === "/v1/oauth/revoke") {
+        oauthCalls.push({ step: path.endsWith("token") ? "token" : "revoke", auth: req.headers.authorization, body: JSON.parse(raw || "{}"), version: req.headers["notion-version"] });
+        if (req.headers.authorization !== `Basic ${Buffer.from("cid_mock:secret_client_mock").toString("base64")}`) return json({ error: "invalid_client" }, 401);
+        return path.endsWith("token")
+          ? json({ access_token: "oauth_at_mock", refresh_token: "oauth_rt_mock", bot_id: "bot", workspace_id: "w", workspace_name: "Opale OAuth" })
+          : json({ request_id: "r" });
+      }
+      if (req.headers.authorization !== "Bearer secret_mock" && req.headers.authorization !== "Bearer oauth_at_mock") return json({ object: "error", status: 401, code: "unauthorized" }, 401);
       const now = new Date().toISOString();
       if (path === "/v1/users/me") return json({ bot: { workspace_name: "Opale (mock)" } });
       if (path === "/v1/search") return json({ results: [notionPage(NOTION_PAGE, "Spec KYC Italie", now)], has_more: false, next_cursor: null });
@@ -559,6 +574,50 @@ try {
     });
     await waitMsg(options, /modifiés dans un autre onglet/, 5000);
     assert.equal(await options.inputValue("#p_name"), "Brief du matin (édité)", "saisie locale conservée");
+  });
+
+  await test("Notion OAuth : connexion via launchWebAuthFlow, appels API avec le jeton OAuth, déconnexion + révocation", async () => {
+    await options.goto("about:blank");
+    await options.goto(`chrome-extension://${extId}/options.html`);
+    await options.waitForSelector("#n_c_mode");
+    const redirect = await options.textContent("#n_redirect");
+    assert.equal(redirect, `https://${extId}.chromiumapp.org/notion`);
+    await options.selectOption("#n_c_mode", "oauth");
+    assert.equal(await options.isVisible("#n_c_cid"), true);
+    assert.equal(await options.isVisible("#n_c_token"), false);
+    await options.fill("#n_c_cid", "cid_mock");
+    await options.fill("#n_c_secret", "secret_client_mock");
+    await options.click('[data-oauth="connect"][data-ws="company"]');
+    await waitMsg(options, /Connecté à « Opale OAuth »/, 30_000);
+    const authorize = oauthCalls.find((c) => c.step === "authorize").params;
+    assert.deepEqual([authorize.client_id, authorize.response_type, authorize.owner, authorize.redirect_uri], ["cid_mock", "code", "user", redirect]);
+    const token = oauthCalls.find((c) => c.step === "token");
+    assert.deepEqual(token.body, { grant_type: "authorization_code", code: "code_mock", redirect_uri: redirect });
+    assert.match(await options.textContent("#n_c_status"), /Connecté à « Opale OAuth »/);
+    const stored = (await sw.evaluate(() => chrome.storage.local.get("settings"))).settings.notion.company;
+    assert.equal(stored.authMode, "oauth");
+    assert.equal(stored.oauth.accessToken, "oauth_at_mock");
+
+    notionCalls.length = 0;
+    await options.click("[data-test=notion-company]");
+    await waitMsg(options, /Opale \(mock\)/);
+    assert.equal(notionCalls.at(-1).headers.authorization, "Bearer oauth_at_mock", "API appelée avec le jeton OAuth");
+
+    options.once("dialog", (d) => d.accept());
+    await options.click('[data-oauth="disconnect"][data-ws="company"]');
+    await waitMsg(options, /Déconnecté \(jeton révoqué/);
+    const revoke = oauthCalls.find((c) => c.step === "revoke");
+    assert.deepEqual(revoke.body, { token: "oauth_at_mock" });
+    assert.equal(revoke.version, "2026-03-11");
+    assert.match(await options.textContent("#n_c_status"), /Non connecté/);
+    const after = (await sw.evaluate(() => chrome.storage.local.get("settings"))).settings.notion.company.oauth;
+    assert.equal(after.accessToken, "");
+    assert.equal(after.clientId, "cid_mock", "Client ID conservé pour une reconnexion");
+
+    // Retour au mode jeton pour les scénarios suivants
+    await options.selectOption("#n_c_mode", "token");
+    await options.click("#save");
+    await waitMsg(options, /Enregistré/);
   });
 
   await test("sécurité : depuis le monde isolé du content script, ni brief ni lecture des tokens", async () => {

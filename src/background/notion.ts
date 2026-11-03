@@ -1,8 +1,9 @@
 import { NOTION_API } from "../shared/endpoints";
-import type { NotionWorkspaceConfig } from "../shared/types";
+import type { NotionWorkspaceConfig, NotionWorkspaceKey } from "../shared/types";
+import { refreshNotionAccess } from "./notionAuth";
 
 /**
- * Client Notion minimal (API REST publique, token d'intégration interne).
+ * Client Notion minimal (API REST publique) — jeton d'API (connexion interne) ou OAuth utilisateur.
  * Une intégration par workspace (perso / entreprise) — l'intégration n'accède qu'aux pages
  * explicitement partagées avec elle : c'est le premier niveau de contrôle d'accès.
  */
@@ -20,10 +21,24 @@ export interface NotionPageLite {
 }
 
 export class NotionClient {
-  constructor(private readonly ws: NotionWorkspaceConfig) {}
+  private refreshed = false;
+
+  /**
+   * @param ws  configuration du workspace
+   * @param key clé du workspace — requise pour renouveler et persister un jeton OAuth expiré
+   */
+  constructor(
+    private readonly ws: NotionWorkspaceConfig,
+    private readonly key?: NotionWorkspaceKey,
+  ) {}
+
+  /** Jeton effectif selon le mode : connexion interne (jeton d'API) ou OAuth utilisateur. */
+  private get token(): string {
+    return (this.ws.authMode === "oauth" ? this.ws.oauth?.accessToken : this.ws.token)?.trim() ?? "";
+  }
 
   get configured(): boolean {
-    return this.ws.token.trim().length > 0;
+    return this.token.length > 0;
   }
 
   private async call<T = Json>(path: string, init: RequestInit = {}, attempt = 0): Promise<T> {
@@ -31,7 +46,7 @@ export class NotionClient {
       signal: AbortSignal.timeout(30_000),
       ...init,
       headers: {
-        Authorization: `Bearer ${this.ws.token}`,
+        Authorization: `Bearer ${this.token}`,
         "Notion-Version": NOTION_VERSION,
         "Content-Type": "application/json",
         ...(init.headers ?? {}),
@@ -42,7 +57,18 @@ export class NotionClient {
       await new Promise((r) => setTimeout(r, wait));
       return this.call<T>(path, init, attempt + 1);
     }
-    if (!res.ok) throw new Error(`Notion ${res.status}: ${(await res.text()).slice(0, 300)}`);
+    // OAuth : jeton expiré → un seul renouvellement puis nouvel essai
+    if (res.status === 401 && this.ws.authMode === "oauth" && this.key && !this.refreshed) {
+      this.refreshed = true;
+      this.ws.oauth = { ...this.ws.oauth, accessToken: await refreshNotionAccess(this.key) };
+      return this.call<T>(path, init, attempt);
+    }
+    if (!res.ok) {
+      if (res.status === 401) {
+        throw new Error(this.ws.authMode === "oauth" ? "Notion 401 : session expirée — reconnecte-toi (Réglages › Notion)." : "Notion 401 : jeton d'API invalide ou révoqué.");
+      }
+      throw new Error(`Notion ${res.status}: ${(await res.text()).slice(0, 300)}`);
+    }
     return (await res.json()) as T;
   }
 

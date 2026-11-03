@@ -130,7 +130,7 @@ async function collect(settings: Settings, profile: BriefProfile, interactive: b
   for (const [key, on] of wanted) {
     if (!on) continue;
     const ws = settings.notion[key];
-    const client = new NotionClient(ws);
+    const client = new NotionClient(ws, key);
     if (!client.configured) continue;
     try {
       const pages = await collectNotion(client, ws.briefingRootIds, since);

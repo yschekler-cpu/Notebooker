@@ -141,21 +141,58 @@
 
   <section class="card" id="notion">
     <h2><span class="ico" style="--tint:var(--gray)"><svg><use href="#i-notion"/></svg></span>Notion</h2>
+    <p class="section-sub">Un accès par workspace. <b>Jeton d'API</b> si tu peux créer une connexion interne ; sinon <b>OAuth</b> (aucune autorisation d'admin requise : tu choisis les pages partagées lors de la connexion).</p>
     <div class="grid">
-      <div>
+      <div class="ws" data-ws="personal">
         <label>Libellé workspace perso</label><input type="text" id="n_p_label" />
-        <label>Token intégration (perso)</label><input type="password" id="n_p_token" autocomplete="off" />
+        <label for="n_p_mode">Méthode d'authentification</label>
+        <select id="n_p_mode" class="n-mode">
+          <option value="token">Jeton d'API (connexion interne)</option>
+          <option value="oauth">OAuth (connexion utilisateur)</option>
+        </select>
+        <div class="mode-token">
+          <label>Jeton d'API</label><input type="password" id="n_p_token" autocomplete="off" />
+        </div>
+        <div class="mode-oauth" hidden>
+          <label>Client ID OAuth</label><input type="text" id="n_p_cid" autocomplete="off" spellcheck="false" />
+          <label>Secret client OAuth</label><input type="password" id="n_p_secret" autocomplete="off" />
+          <div class="oauth-status" id="n_p_status"></div>
+          <div class="actions" style="margin-top:10px">
+            <button class="primary" data-oauth="connect" data-ws="personal">Se connecter avec Notion</button>
+            <button class="danger" data-oauth="disconnect" data-ws="personal">Déconnecter</button>
+          </div>
+        </div>
         <label>Bases / pages scannées (une par ligne, vide = toutes les pages partagées)</label><textarea id="n_p_roots"></textarea>
-        <button data-test="notion-personal">Tester</button>
+        <div class="actions" style="margin-top:10px"><button data-test="notion-personal">Tester</button></div>
       </div>
-      <div>
+      <div class="ws" data-ws="company">
         <label>Libellé workspace entreprise</label><input type="text" id="n_c_label" />
-        <label>Token intégration (entreprise)</label><input type="password" id="n_c_token" autocomplete="off" />
-        <label>Bases / pages scannées</label><textarea id="n_c_roots"></textarea>
-        <button data-test="notion-company">Tester</button>
+        <label for="n_c_mode">Méthode d'authentification</label>
+        <select id="n_c_mode" class="n-mode">
+          <option value="token">Jeton d'API (connexion interne)</option>
+          <option value="oauth">OAuth (connexion utilisateur)</option>
+        </select>
+        <div class="mode-token">
+          <label>Jeton d'API</label><input type="password" id="n_c_token" autocomplete="off" />
+        </div>
+        <div class="mode-oauth" hidden>
+          <label>Client ID OAuth</label><input type="text" id="n_c_cid" autocomplete="off" spellcheck="false" />
+          <label>Secret client OAuth</label><input type="password" id="n_c_secret" autocomplete="off" />
+          <div class="oauth-status" id="n_c_status"></div>
+          <div class="actions" style="margin-top:10px">
+            <button class="primary" data-oauth="connect" data-ws="company">Se connecter avec Notion</button>
+            <button class="danger" data-oauth="disconnect" data-ws="company">Déconnecter</button>
+          </div>
+        </div>
+        <label>Bases / pages scannées (une par ligne, vide = toutes les pages partagées)</label><textarea id="n_c_roots"></textarea>
+        <div class="actions" style="margin-top:10px"><button data-test="notion-company">Tester</button></div>
       </div>
     </div>
-    <div class="hint">Créer une intégration interne sur notion.so/profile/integrations, puis la partager uniquement avec les pages/bases voulues (principe du moindre privilège). Les bases listées ici apparaissent aussi comme cibles d'ajout.</div>
+    <div class="oauth-help glass-inset">
+      <b>Configurer OAuth dans Notion</b> — Outils pour les développeur·euses › Connexions › Nouvelle connexion › <i>OAuth</i>, puis colle cette URI de redirection :
+      <div class="copy-row"><code id="n_redirect"></code><button id="n_redirect_copy" type="button">Copier</button></div>
+      Récupère ensuite le <i>Client ID</i> et le <i>secret client</i> de la connexion et colle-les ci-dessus. Ils restent stockés localement dans Chrome (jamais dans le code de l'extension).
+    </div>
   </section>
 
   <section class="card" id="claude">

@@ -9,6 +9,7 @@ import { testClaude } from "./claude";
 import { fetchRecentMails } from "./gmail";
 import { audioStatus, listNotebooks, notebookUrl } from "./notebooklm";
 import { NotionClient, clean } from "./notion";
+import { connectNotion, disconnectNotion } from "./notionAuth";
 import { classify, requiredOrigin } from "./classify";
 import { refreshDueSubscriptions, refreshSubscriptionNow, withSyncLock } from "./sync";
 
@@ -256,6 +257,8 @@ async function handle(req: BackgroundRequest): Promise<unknown> {
       await rebuildContextMenus();
       return next;
     }
+    case "notionOAuth":
+      return req.op === "connect" ? connectNotion(req.workspace) : disconnectNotion(req.workspace);
     case "testCalendar": {
       const events = await fetchEvents((await getSettings()).calendar, calendarWindow(), true);
       return `${events.length} réunion(s) lisible(s) sur la fenêtre du prochain brief`;
@@ -271,7 +274,7 @@ async function handle(req: BackgroundRequest): Promise<unknown> {
       await dismissActions(req.ids);
       return { dismissed: req.ids.length };
     case "testNotion":
-      return new NotionClient((await getSettings()).notion[req.workspace]).me();
+      return new NotionClient((await getSettings()).notion[req.workspace], req.workspace).me();
     case "testGmail": {
       const mails = await fetchRecentMails({ query: "newer_than:1d", max: 3, since: new Date(Date.now() - 86_400_000), interactive: true });
       return `${mails.length} email(s) lisible(s)`;

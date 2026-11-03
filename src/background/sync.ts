@@ -195,7 +195,7 @@ async function push(sub: Subscription, sources: SourcePayload[], settings: Setti
     const r = await addSources(t.notebookId, sources);
     return { failed: r.failed, errors: r.errors };
   }
-  const notion = new NotionClient(settings.notion[t.workspace]);
+  const notion = new NotionClient(settings.notion[t.workspace], t.workspace);
   if (!notion.configured) throw new Error(`Token Notion manquant (${settings.notion[t.workspace].label}).`);
   const failed: number[] = [];
   const errors: string[] = [];
@@ -228,8 +228,9 @@ async function fetchText(url: string): Promise<string> {
 }
 
 function notionFor(sub: Subscription, settings: Settings): NotionClient {
-  const ws = settings.notion[sub.workspace ?? "personal"];
-  const client = new NotionClient(ws);
+  const key = sub.workspace ?? "personal";
+  const ws = settings.notion[key];
+  const client = new NotionClient(ws, key);
   if (!client.configured) throw new Error(`Token Notion manquant (${ws.label}).`);
   return client;
 }

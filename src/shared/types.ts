@@ -56,9 +56,25 @@ export interface Subscription {
 
 export type NotionWorkspaceKey = "personal" | "company";
 
+export interface NotionOAuthState {
+  /** Fournis par l'utilisateur (connexion OAuth créée dans Notion). Jamais embarqués dans le code. */
+  clientId: string;
+  clientSecret: string;
+  /** Renseignés par le flux OAuth. */
+  accessToken: string;
+  refreshToken: string;
+  workspaceName: string;
+  workspaceId: string;
+  botId: string;
+  connectedAt: string | null;
+}
+
 export interface NotionWorkspaceConfig {
   label: string;
+  /** « token » = jeton d'API (connexion interne) ; « oauth » = connexion OAuth au niveau utilisateur. */
+  authMode: "token" | "oauth";
   token: string;
+  oauth: NotionOAuthState;
   /** Bases/pages à scanner pour le brief (vide = recherche globale des pages modifiées). */
   briefingRootIds: string[];
 }

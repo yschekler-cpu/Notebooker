@@ -14,3 +14,5 @@ export const GMAIL_API = E2E ? `${E2E}/gmail/v1/users/me` : "https://gmail.googl
 export const CALENDAR_API = E2E ? `${E2E}/calendar/v3` : "https://www.googleapis.com/calendar/v3";
 /** Build E2E uniquement : pas de consentement Google possible en test → jeton factice accepté par le mock. */
 export const E2E_GOOGLE_TOKEN: string | null = E2E ? "e2e-google-token" : null;
+/** Page d'autorisation Notion (OAuth). */
+export const NOTION_OAUTH_AUTHORIZE = E2E ? `${E2E}/notion/v1/oauth/authorize` : "https://api.notion.com/v1/oauth/authorize";

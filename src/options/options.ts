@@ -4,7 +4,7 @@ import { exportOrganization, importOrganization } from "../shared/org";
 import { PROFILE_TEMPLATES, normalizeProfile } from "../shared/profiles";
 import { DAY_LABELS } from "../shared/schedule";
 import { getActions, getBriefingRuns, getFolders, getNotebookMetas, getSettings, getSubscriptions, saveSettings, uid } from "../shared/storage";
-import type { ActionPriority, AudioFormat, AudioLength, BriefProfile, Settings, Subscription, SubscriptionKind, Target } from "../shared/types";
+import type { ActionPriority, AudioFormat, AudioLength, BriefProfile, NotionWorkspaceConfig, Settings, Subscription, SubscriptionKind, Target } from "../shared/types";
 
 const $ = <T extends HTMLElement = HTMLInputElement>(id: string) => document.getElementById(id) as T;
 const lines = (id: string) => $<HTMLTextAreaElement>(id).value.split("\n").map((l) => l.trim()).filter(Boolean);
@@ -35,12 +35,8 @@ function fill(s: Settings): void {
   $("bl_db").value = s.backlog.databaseId;
   $("bl_status").value = s.backlog.defaultStatus;
 
-  $("n_p_label").value = s.notion.personal.label;
-  $("n_p_token").value = s.notion.personal.token;
-  $<HTMLTextAreaElement>("n_p_roots").value = s.notion.personal.briefingRootIds.join("\n");
-  $("n_c_label").value = s.notion.company.label;
-  $("n_c_token").value = s.notion.company.token;
-  $<HTMLTextAreaElement>("n_c_roots").value = s.notion.company.briefingRootIds.join("\n");
+  fillNotion("p", s.notion.personal);
+  fillNotion("c", s.notion.company);
 
   $("c_enabled").checked = s.claude.enabled;
   $<HTMLSelectElement>("c_mode").value = s.claude.authMode;
@@ -62,8 +58,8 @@ function read(prev: Settings): Settings {
     calendar: { calendarIds: lines("k_ids").length ? lines("k_ids") : ["primary"], hidePrivateEvents: $("k_private").checked, skipDeclined: $("k_declined").checked },
     backlog: { workspace: $<HTMLSelectElement>("bl_ws").value as "personal" | "company", databaseId: $("bl_db").value.trim(), defaultStatus: $("bl_status").value.trim() },
     notion: {
-      personal: { label: $("n_p_label").value, token: $("n_p_token").value.trim(), briefingRootIds: lines("n_p_roots") },
-      company: { label: $("n_c_label").value, token: $("n_c_token").value.trim(), briefingRootIds: lines("n_c_roots") },
+      personal: readNotion("p", prev.notion.personal),
+      company: readNotion("c", prev.notion.company),
     },
     claude: {
       ...prev.claude,
@@ -76,6 +72,43 @@ function read(prev: Settings): Settings {
       redactAmounts: $("c_amounts").checked,
     },
     notebooklm: { accountIndex: Number($("l_account").value) || 0, backgroundTabs: $("l_bg").checked },
+  };
+}
+
+// ─── Notion (jeton d'API ou OAuth) ─────────────────────────────────────────────
+
+function fillNotion(k: "p" | "c", ws: NotionWorkspaceConfig): void {
+  $(`n_${k}_label`).value = ws.label;
+  $<HTMLSelectElement>(`n_${k}_mode`).value = ws.authMode;
+  $(`n_${k}_token`).value = ws.token;
+  $(`n_${k}_cid`).value = ws.oauth.clientId;
+  $(`n_${k}_secret`).value = ws.oauth.clientSecret;
+  $<HTMLTextAreaElement>(`n_${k}_roots`).value = ws.briefingRootIds.join("\n");
+  const status = $(`n_${k}_status`);
+  const connected = !!ws.oauth.accessToken;
+  status.className = `oauth-status${connected ? " on" : ""}`;
+  status.textContent = connected
+    ? `Connecté à « ${ws.oauth.workspaceName || "Notion"} »${ws.oauth.connectedAt ? ` depuis le ${new Date(ws.oauth.connectedAt).toLocaleDateString("fr-FR")}` : ""}`
+    : "Non connecté";
+  toggleNotionMode(k);
+}
+
+function toggleNotionMode(k: "p" | "c"): void {
+  const oauth = $<HTMLSelectElement>(`n_${k}_mode`).value === "oauth";
+  const col = $(`n_${k}_mode`).closest(".ws")!;
+  col.querySelector<HTMLElement>(".mode-token")!.hidden = oauth;
+  col.querySelector<HTMLElement>(".mode-oauth")!.hidden = !oauth;
+}
+
+function readNotion(k: "p" | "c", prev: NotionWorkspaceConfig): NotionWorkspaceConfig {
+  return {
+    ...prev,
+    label: $(`n_${k}_label`).value,
+    authMode: $<HTMLSelectElement>(`n_${k}_mode`).value === "oauth" ? "oauth" : "token",
+    token: $(`n_${k}_token`).value.trim(),
+    // Jetons d'accès / refresh : jamais saisis dans le formulaire → conservés depuis l'état courant
+    oauth: { ...prev.oauth, clientId: $(`n_${k}_cid`).value.trim(), clientSecret: $(`n_${k}_secret`).value.trim() },
+    briefingRootIds: lines(`n_${k}_roots`),
   };
 }
 
@@ -429,6 +462,40 @@ async function init(): Promise<void> {
     say(`${ids.length} action(s) ignorée(s).`);
     void renderActions();
   };
+
+  // Notion : bascule jeton / OAuth, URI de redirection, connexion / déconnexion
+  (["p", "c"] as const).forEach((k) => {
+    $<HTMLSelectElement>(`n_${k}_mode`).addEventListener("change", () => toggleNotionMode(k));
+  });
+  $("n_redirect").textContent = chrome.identity.getRedirectURL("notion");
+  $("n_redirect_copy").onclick = async () => {
+    try {
+      await navigator.clipboard.writeText($("n_redirect").textContent ?? "");
+      say("URI de redirection copiée.", "ok");
+    } catch {
+      say("Copie impossible : sélectionne l'URI à la main.", "warn");
+    }
+  };
+  document.querySelectorAll<HTMLButtonElement>("[data-oauth]").forEach((b) => {
+    b.onclick = async () => {
+      const ws = b.dataset.ws as "personal" | "company";
+      const op = b.dataset.oauth as "connect" | "disconnect";
+      try {
+        await persist(); // Client ID / secret saisis → enregistrés avant d'ouvrir la fenêtre Notion
+        if (op === "disconnect" && !confirm("Déconnecter Notion ? Le jeton sera révoqué côté Notion.")) return;
+        say(op === "connect" ? "Ouverture de Notion… choisis les pages à partager…" : "Déconnexion…");
+        const r = await send<{ workspaceName?: string; revoked?: boolean }>({ type: "notionOAuth", op, workspace: ws });
+        say(op === "connect" ? `✅ Connecté à « ${r.workspaceName} ».` : r.revoked ? "Déconnecté (jeton révoqué côté Notion)." : "Déconnecté localement (révocation Notion non confirmée).", "ok");
+        // État OAuth écrit par le service worker : rechargement explicite de la section Notion
+        const fresh = await getSettings();
+        settings = { ...settings, notion: fresh.notion };
+        fillNotion("p", fresh.notion.personal);
+        fillNotion("c", fresh.notion.company);
+      } catch (e) {
+        say(`❌ ${e instanceof Error ? e.message : String(e)}`, "error");
+      }
+    };
+  });
 
   document.querySelectorAll<HTMLButtonElement>("[data-test]").forEach((b) => {
     b.onclick = async () => {

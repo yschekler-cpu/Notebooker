@@ -1,5 +1,5 @@
 import { defaultProfile, migrateRawSettings, normalizeProfile } from "./profiles";
-import type { ActionItem, BriefingRun, BriefMemory, Folder, NotebookMeta, Settings, Subscription } from "./types";
+import type { ActionItem, BriefingRun, BriefMemory, Folder, NotebookMeta, NotionOAuthState, Settings, Subscription } from "./types";
 
 /**
  * Règle de stockage :
@@ -7,14 +7,18 @@ import type { ActionItem, BriefingRun, BriefMemory, Folder, NotebookMeta, Settin
  * - chrome.storage.local → secrets (tokens Notion, clé Claude) + état volumineux. Jamais synchronisé.
  */
 
+export function emptyOAuth(): NotionOAuthState {
+  return { clientId: "", clientSecret: "", accessToken: "", refreshToken: "", workspaceName: "", workspaceId: "", botId: "", connectedAt: null };
+}
+
 export const DEFAULT_SETTINGS: Settings = {
   profiles: [defaultProfile()],
   compliance: { gmailExclusions: [] },
   calendar: { calendarIds: ["primary"], hidePrivateEvents: true, skipDeclined: true },
   backlog: { workspace: "company", databaseId: "", defaultStatus: "" },
   notion: {
-    personal: { label: "Notion perso", token: "", briefingRootIds: [] },
-    company: { label: "Notion entreprise", token: "", briefingRootIds: [] },
+    personal: { label: "Notion perso", authMode: "token", token: "", oauth: emptyOAuth(), briefingRootIds: [] },
+    company: { label: "Notion entreprise", authMode: "token", token: "", oauth: emptyOAuth(), briefingRootIds: [] },
   },
   claude: {
     enabled: false,
@@ -57,6 +61,22 @@ export function resolveSettings(raw: Record<string, unknown> | undefined): Setti
 
 export async function saveSettings(settings: Settings): Promise<void> {
   await chrome.storage.local.set({ settings });
+}
+
+let settingsChain: Promise<unknown> = Promise.resolve();
+
+/**
+ * Modification sérialisée des réglages depuis le service worker (ex. jetons OAuth renouvelés) :
+ * relit l'état courant juste avant d'écrire, pour ne jamais écraser une modification concurrente.
+ */
+export function mutateSettings(fn: (s: Settings) => Settings): Promise<Settings> {
+  const run = settingsChain.then(async () => {
+    const next = fn(await getSettings());
+    await saveSettings(next);
+    return next;
+  });
+  settingsChain = run.catch(() => undefined);
+  return run;
 }
 
 // ─── Organisation (sync) ──────────────────────────────────────────────────────

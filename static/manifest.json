@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Notebooker — NotebookLM Organizer & Daily Brief",
   "short_name": "Notebooker",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Dossiers/tags pour NotebookLM, sources auto-synchronisées (web, YouTube, RSS, Notion) et podcast de brief quotidien.",
   "minimum_chrome_version": "120",
   "background": {

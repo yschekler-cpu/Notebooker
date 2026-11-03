@@ -25,6 +25,8 @@ export type BackgroundRequest =
   | { type: "testGmail" }
   | { type: "testClaude" }
   | { type: "testCalendar" }
+  /** Connexion Notion OAuth : ouverture du flux d'autorisation ou déconnexion (révocation). */
+  | { type: "notionOAuth"; op: "connect" | "disconnect"; workspace: "personal" | "company" }
   | { type: "inspectBacklog" }
   /** Actions : envoi au backlog (avec corrections éventuelles) ou rejet. */
   | { type: "actionsOp"; op: "push"; ids: string[]; edits?: Record<string, { title?: string; due?: string; priority?: "haute" | "moyenne" | "basse" }> }

@@ -106,7 +106,7 @@ function para(text: string) {
 export async function inspectBacklog(settings: Settings): Promise<{ title: string; mapping: BacklogMapping; warnings: string[] }> {
   const { workspace, databaseId, defaultStatus } = settings.backlog;
   if (!databaseId.trim()) throw new Error("Aucune base backlog configurée.");
-  const notion = new NotionClient(settings.notion[workspace]);
+  const notion = new NotionClient(settings.notion[workspace], workspace);
   if (!notion.configured) throw new Error(`Token Notion manquant (${settings.notion[workspace].label}).`);
   const schema = await notion.databaseSchema(databaseId);
   const mapping = detectMapping(schema);
@@ -127,7 +127,7 @@ export async function pushActions(
 ): Promise<{ sent: number; errors: string[] }> {
   const settings = await getSettings();
   const { mapping } = await inspectBacklog(settings);
-  const notion = new NotionClient(settings.notion[settings.backlog.workspace]);
+  const notion = new NotionClient(settings.notion[settings.backlog.workspace], settings.backlog.workspace);
   const pending = (await getActions()).filter((a) => ids.includes(a.id) && (a.status === "pending" || a.status === "error"));
   let sent = 0;
   const errors: string[] = [];
