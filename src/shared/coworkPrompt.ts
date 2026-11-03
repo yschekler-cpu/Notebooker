@@ -39,7 +39,13 @@ export function buildCoworkPrompt(p: CoworkPromptParams): string {
   const folder = p.folder.trim() || "<CHEMIN_DU_DOSSIER>";
   const manifest = p.manifestFile.trim() || "latest.json";
   const base = manifest.replace(/\.json$/, "");
-  const exclusions = p.exclusions.length ? p.exclusions.map((e) => `   - ${e}`).join("\n") : "   - (aucune exclusion configurée : demande-moi la liste avant de commencer)";
+  // Routine déclenchée par API = exécution sans personne pour répondre : jamais de question bloquante.
+  const unattended = p.target?.kind === "notion";
+  const exclusions = p.exclusions.length
+    ? p.exclusions.map((e) => `   - ${e}`).join("\n")
+    : unattended
+      ? "   - (aucune exclusion configurée) : par défaut, ignore tout mail ou page portant sur un dossier KYC/KYD, un screening LCB-FT ou une donnée RH individuelle"
+      : "   - (aucune exclusion configurée : demande-moi la liste avant de commencer)";
   const context = (p.notionContext ?? "").trim() || OPALE_NOTION_CONTEXT;
   const repos = (p.githubRepos ?? []).map((r) => r.trim()).filter(Boolean);
   const github = repos.length

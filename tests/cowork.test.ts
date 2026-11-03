@@ -20,6 +20,10 @@ describe("prompt Claude Cowork", () => {
   });
   it("sans exclusions : demande explicite avant de commencer", () => {
     expect(buildCoworkPrompt({ folder: "", manifestFile: "", profileName: "x", lookbackHours: 24, exclusions: [], focus: "" })).toMatch(/demande-moi la liste/);
+    // Routine API (exécution sans surveillance) : jamais de question bloquante, exclusions par défaut
+    const routine = buildCoworkPrompt({ folder: "", manifestFile: "", profileName: "x", lookbackHours: 24, exclusions: [], focus: "", target: { kind: "notion", pageUrl: "https://notion.so/p" } });
+    expect(routine).not.toMatch(/demande-moi/);
+    expect(routine).toMatch(/par défaut, ignore tout mail ou page portant sur un dossier KYC\/KYD/);
   });
 });
 
