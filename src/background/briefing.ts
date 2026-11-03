@@ -3,7 +3,7 @@ import { formatDateFR, localDay } from "../shared/schedule";
 import { getBriefingRuns, getMemory, getSettings, saveBriefingRun, saveMemory, uid } from "../shared/storage";
 import type { AudioOptions, BriefingRun, BriefProfile, NotionWorkspaceKey, Settings, SourcePayload } from "../shared/types";
 import { readInbox } from "./localInbox";
-import { NO_REPEAT_INSTRUCTIONS, diffTopics, followUpToMarkdown, hasNews, newsToMarkdown } from "./topicDiff";
+import { NO_REPEAT_INSTRUCTIONS, STRUCTURE_INSTRUCTIONS, diffTopics, followUpToMarkdown, hasNews, newsToMarkdown } from "./topicDiff";
 import { enqueueActions } from "./actions";
 import { agendaToMarkdown, calendarWindow, fetchEvents, type CalendarEvent } from "./calendar";
 import { analyzeCorpus, type ExtractedAction } from "./claude";
@@ -365,19 +365,19 @@ async function runLocalBrief(settings: Settings, profile: BriefProfile, run: Bri
     const today = localDay();
     const { diff, memory } = diffTopics(await getMemory(profile.id), manifest.topics, today);
     if (manifest.topics.length) {
-      log(`Suivi : ${diff.fresh.length} nouveau(x), ${diff.changed.length} modifié(s), ${diff.unchanged.length} sans nouveauté, ${diff.resolved.length} résolu(s)`);
+      log(`Suivi : ${diff.fresh.length} nouveau(x), ${diff.changed.length} modifié(s), ${diff.unchanged.length} sans nouveauté, ${diff.resolved.length} résolu(s), ${diff.reminders.length} rappel(s)`);
     }
 
     const mask = (t: string) => (settings.claude.redactPII ? redact(t, { amounts: settings.claude.redactAmounts }) : t);
     const date = formatDateFR();
     const sources: SourcePayload[] = [];
-    const news = newsToMarkdown(diff);
+    const news = newsToMarkdown(diff, today);
     if (news) sources.push({ type: "text", title: `Nouveautés & mises à jour — ${date}`, text: mask(news) });
     for (const f of files) sources.push({ type: "text", title: `${f.title} — ${date}`, text: mask(f.text) });
     const follow = followUpToMarkdown(diff);
     if (follow) sources.push({ type: "text", title: `Suivi des sujets ouverts — ${date}`, text: mask(follow) });
 
-    if (!hasNews(diff) && files.length === 0) {
+    if (!hasNews(diff, today) && files.length === 0) {
       log("Rien de nouveau depuis le dernier brief — pas de podcast généré (aucune redite).", "warn");
       await saveMemory(profile.id, memory);
       await markProcessed(profile.id, manifest.id);
@@ -394,7 +394,7 @@ async function runLocalBrief(settings: Settings, profile: BriefProfile, run: Bri
     }
 
     const audio: AudioOptions = { ...profile.audio, ...(manifest.audio ?? {}) };
-    audio.instructions = [audio.instructions, NO_REPEAT_INSTRUCTIONS].filter(Boolean).join(" ");
+    audio.instructions = [audio.instructions, STRUCTURE_INSTRUCTIONS, NO_REPEAT_INSTRUCTIONS].filter(Boolean).join(" ");
     const title = manifest.title || profile.notebookTitleTemplate.replace("{date}", date);
 
     const { notebookId, added, audioStarted } = await createNotebookWithAudio(title, sources, audio, log, async (id) => {

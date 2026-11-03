@@ -28,12 +28,26 @@ export const MAX_TOPICS = 80;
 
 export type TopicStatus = "new" | "updated" | "ongoing" | "resolved";
 
+/**
+ * Rubrique du brief (ordre de lecture du podcast) :
+ * company = vue 360 Opale (autres pôles) · tasks = mes tâches & demandes · projects = avancement
+ * produit & tech · attention = points d'attention / risques · other = divers.
+ */
+export type TopicSection = "company" | "tasks" | "projects" | "attention" | "other";
+export const SECTIONS: TopicSection[] = ["company", "tasks", "projects", "attention", "other"];
+
 export interface InboxTopic {
   key: string;
   title: string;
   status: TopicStatus;
   summary: string;
   refs: string[];
+  section: TopicSection;
+  priority?: "haute" | "moyenne" | "basse";
+  /** Échéance AAAA-MM-JJ. */
+  due?: string;
+  /** Pôle, porteur ou assigné (texte libre court). */
+  owner?: string;
 }
 
 export interface InboxSourceRef {
@@ -131,6 +145,10 @@ export function parseManifest(json: string): InboxManifest {
       status: TOPIC_STATUSES.includes(t.status as TopicStatus) ? (t.status as TopicStatus) : "updated",
       summary: str(t.summary, 20_000),
       refs: Array.isArray(t.refs) ? t.refs.map((r) => str(r, 200)).filter(Boolean).slice(0, 10) : [],
+      section: SECTIONS.includes(t.section as TopicSection) ? (t.section as TopicSection) : "other",
+      ...(["haute", "moyenne", "basse"].includes(t.priority as string) ? { priority: t.priority as InboxTopic["priority"] } : {}),
+      ...(/^\d{4}-\d{2}-\d{2}$/.test(str(t.due, 10)) ? { due: str(t.due, 10) } : {}),
+      ...(str(t.owner, 80) ? { owner: str(t.owner, 80) } : {}),
     });
   }
 

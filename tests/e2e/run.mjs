@@ -635,8 +635,9 @@ try {
       }));
     };
     writeBrief("j1", [
-      { key: "kyc-italie", title: "KYC Italie", status: "new", summary: "Le format du codice fiscale est en attente de validation par Marco.", refs: ["[Mail: Codice fiscale]"] },
-      { key: "eltif", title: "ELTIF 2", status: "new", summary: "Note AMF reçue, analyse juridique en cours.", refs: [] },
+      { key: "kyc-italie", section: "projects", title: "KYC Italie", status: "new", summary: "Le format du codice fiscale est en attente de validation par Marco.", refs: ["[Mail: Codice fiscale]"] },
+      { key: "eltif", section: "company", title: "ELTIF 2", status: "new", summary: "Note AMF reçue, analyse juridique en cours.", owner: "Conformité", refs: [] },
+      { key: "rfc-bourso", section: "tasks", title: "RFC annulation Bourso", status: "new", summary: "En Waiting for Input : précisions attendues de ma part.", priority: "haute", due: day(1), refs: [] },
     ], true);
 
     await options.goto("about:blank");
@@ -651,7 +652,7 @@ try {
     await waitMsg(options, /Brief Cowork \(dossier local\) :/);
     assert.match(await options.textContent("#li_access"), /autorisé/);
     await options.click("[data-test=inbox]");
-    await waitMsg(options, /Dépôt « j1 ».*2 sujet\(s\), 1 fichier\(s\), 1 action\(s\) — prêt à traiter/);
+    await waitMsg(options, /Dépôt « j1 ».*3 sujet\(s\), 1 fichier\(s\), 1 action\(s\) — prêt à traiter/);
     const alarms = (await sw.evaluate(() => chrome.alarms.getAll())).map((a) => a.name);
     assert.ok(alarms.includes("inbox"), "surveillance du dossier planifiée");
     const profileId = (await sw.evaluate(() => chrome.storage.local.get("settings"))).settings.profiles.find((p) => p.mode === "localFolder").id;
@@ -675,7 +676,9 @@ try {
     let nb = (await mockState(home)).notebooks.find((n) => n.id === r1.notebookId);
     assert.equal(nb.title, "☀️ Brief Cowork j1");
     assert.deepEqual(nb.sources.map((x) => x.title.split(" — ")[0]), ["Nouveautés & mises à jour", "Agenda du jour"]);
-    assert.match(nb.sources[0].value, /## 🆕 Nouveaux sujets[\s\S]*KYC Italie[\s\S]*ELTIF 2/);
+    // Ordre de lecture : vue 360 → tâches → produit & tech
+    assert.match(nb.sources[0].value, /## 🌐 Vue 360[\s\S]*### 🆕 ELTIF 2[\s\S]*## ✅ Mes tâches[\s\S]*### 🆕 RFC annulation Bourso\n_🔴 priorité haute · échéance [^_]+_[\s\S]*## 🚀 Produit & Tech[\s\S]*### 🆕 KYC Italie/);
+    assert.match(nb.audio.instructions, /vue 360 rapide/);
     assert.match(nb.audio.instructions, /pas un récapitulatif/);
     const pending = (await sw.evaluate(() => chrome.storage.local.get("actionItems"))).actionItems.filter((a) => a.status === "pending");
     assert.ok(pending.some((a) => a.title === "Signer la note de conformité Italie"), "action du manifest en file de validation");
@@ -694,27 +697,31 @@ try {
     }, { pid: profileId, y: day(-1) });
     await shiftMemory();
     writeBrief("j2", [
-      { key: "kyc-italie", title: "KYC Italie", status: "updated", summary: "Marco a validé le format ; reste la signature conformité avant vendredi.", refs: [] },
+      { key: "kyc-italie", section: "projects", title: "KYC Italie", status: "updated", summary: "Marco a validé le format ; reste la signature conformité avant vendredi.", refs: [] },
       // Cowork répète ELTIF à l'identique (casse / ponctuation près) : doit être détecté comme « sans nouveauté »
-      { key: "eltif", title: "ELTIF 2", status: "updated", summary: "note AMF reçue — analyse juridique en cours", refs: [] },
-      { key: "memo-bank", title: "Memo Bank", status: "new", summary: "Nouveau webhook de virement disponible en sandbox.", refs: [] },
+      { key: "eltif", section: "company", title: "ELTIF 2", status: "updated", summary: "note AMF reçue — analyse juridique en cours", refs: [] },
+      { key: "memo-bank", section: "projects", title: "Memo Bank", status: "new", summary: "Nouveau webhook de virement disponible en sandbox.", refs: [] },
+      // RFC inchangée mais échéance aujourd'hui → rappel du jour (une ligne), pas de redite
+      { key: "rfc-bourso", section: "tasks", title: "RFC annulation Bourso", status: "ongoing", summary: "En Waiting for Input : précisions attendues de ma part.", priority: "haute", due: day(0), refs: [] },
     ], false);
     const r2 = await runFor(true);
     nb = (await mockState(home)).notebooks.find((n) => n.id === r2.notebookId);
     const news = nb.sources.find((x) => x.title.startsWith("Nouveautés")).value;
     const follow = nb.sources.find((x) => x.title.startsWith("Suivi des sujets ouverts")).value;
-    assert.match(news, /## 🆕 Nouveaux sujets[\s\S]*Memo Bank/);
-    assert.match(news, /## 🔄 Ce qui a changé[\s\S]*KYC Italie — suivi depuis le/);
+    assert.match(news, /### 🆕 Memo Bank/);
+    assert.match(news, /### 🔄 KYC Italie — suivi depuis le/);
     assert.ok(!/AMF/.test(news), "sujet inchangé absent des nouveautés (pas de redite)");
+    assert.match(news, /## ✅ Mes tâches[\s\S]*⏰ Rappels du jour[\s\S]*- RFC annulation Bourso/);
+    assert.ok(!/précisions attendues/.test(news), "rappel en une ligne, sans redite du contenu");
     assert.match(follow, /ELTIF 2 — ouvert depuis le/);
-    assert.match(r2.steps.map((x) => x.message).join(" | "), /1 nouveau\(x\), 1 modifié\(s\), 1 sans nouveauté/);
+    assert.match(r2.steps.map((x) => x.message).join(" | "), /1 nouveau\(x\), 1 modifié\(s\), 1 sans nouveauté, 0 résolu\(s\), 1 rappel\(s\)/);
 
     // ── J3 : tout est identique, aucun fichier → pas de podcast (aucune redite)
     await shiftMemory();
     writeBrief("j3", [
-      { key: "kyc-italie", title: "KYC Italie", status: "ongoing", summary: "Marco a validé le format ; reste la signature conformité avant vendredi.", refs: [] },
-      { key: "eltif", title: "ELTIF 2", status: "ongoing", summary: "Note AMF reçue, analyse juridique en cours.", refs: [] },
-      { key: "memo-bank", title: "Memo Bank", status: "ongoing", summary: "Nouveau webhook de virement disponible en sandbox.", refs: [] },
+      { key: "kyc-italie", section: "projects", title: "KYC Italie", status: "ongoing", summary: "Marco a validé le format ; reste la signature conformité avant vendredi.", refs: [] },
+      { key: "eltif", section: "company", title: "ELTIF 2", status: "ongoing", summary: "Note AMF reçue, analyse juridique en cours.", refs: [] },
+      { key: "memo-bank", section: "projects", title: "Memo Bank", status: "ongoing", summary: "Nouveau webhook de virement disponible en sandbox.", refs: [] },
     ], false);
     const notebooksBefore = (await mockState(home)).notebooks.length;
     const r3 = await runFor(false);

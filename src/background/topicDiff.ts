@@ -1,5 +1,5 @@
 import type { BriefMemory, MemoryTopic } from "../shared/types";
-import type { InboxTopic } from "./localInbox";
+import { SECTIONS, type InboxTopic, type TopicSection } from "./localInbox";
 import { MEMORY_RETENTION_DAYS } from "./memory";
 
 /**
@@ -21,6 +21,11 @@ export interface TopicDiff {
   resolved: { topic: InboxTopic; memory: MemoryTopic }[];
   /** Mentionnés au brief précédent, absents aujourd'hui. */
   dropped: MemoryTopic[];
+  /**
+   * Inchangés mais à rappeler : échéance aujourd'hui ou dépassée, ou priorité haute sur une tâche /
+   * un point d'attention. Une ligne chacun — ce n'est pas une redite, c'est le rappel du jour.
+   */
+  reminders: { topic: InboxTopic; memory: MemoryTopic }[];
 }
 
 /** Empreinte stable (FNV-1a 32 bits) du contenu normalisé : insensible à la casse, aux espaces et à la ponctuation. */
@@ -46,7 +51,7 @@ function daysBetween(a: string, b: string): number {
 export function diffTopics(prev: BriefMemory, topics: InboxTopic[], today: string): { diff: TopicDiff; memory: BriefMemory } {
   const memTopics: Record<string, MemoryTopic> = structuredClone(prev.topics);
   const reference = prev.lastBriefDate && prev.lastBriefDate !== today ? prev.lastBriefDate : prev.previousBriefDate;
-  const diff: TopicDiff = { fresh: [], changed: [], unchanged: [], resolved: [], dropped: [] };
+  const diff: TopicDiff = { fresh: [], changed: [], unchanged: [], resolved: [], dropped: [], reminders: [] };
   const seen = new Set<string>();
 
   for (const topic of topics) {
@@ -80,6 +85,8 @@ export function diffTopics(prev: BriefMemory, topics: InboxTopic[], today: strin
       m.fingerprint = fp;
       m.lastChanged = today;
       diff.changed.push({ topic, memory: m });
+    } else if ((topic.due && topic.due <= today) || (topic.priority === "haute" && (topic.section === "tasks" || topic.section === "attention"))) {
+      diff.reminders.push({ topic, memory: m });
     } else {
       diff.unchanged.push({ topic, memory: m });
     }
@@ -102,8 +109,10 @@ export function diffTopics(prev: BriefMemory, topics: InboxTopic[], today: strin
   };
 }
 
-export function hasNews(d: TopicDiff): boolean {
-  return d.fresh.length + d.changed.length + d.resolved.length > 0;
+export function hasNews(d: TopicDiff, today?: string): boolean {
+  // Une échéance du jour justifie à elle seule un brief ; une simple priorité haute inchangée, non.
+  const dueToday = today ? d.reminders.some(({ topic }) => topic.due && topic.due <= today) : false;
+  return d.fresh.length + d.changed.length + d.resolved.length > 0 || dueToday;
 }
 
 function fr(day: string): string {
@@ -114,21 +123,48 @@ function refs(t: InboxTopic): string {
   return t.refs.length ? `\n_Sources : ${t.refs.join(" · ")}_` : "";
 }
 
-/** Source principale du podcast : uniquement ce qui est nouveau ou a changé. */
-export function newsToMarkdown(d: TopicDiff): string {
+const SECTION_HEADINGS: Record<TopicSection, string> = {
+  company: "🌐 Vue 360 — ce qui se passe chez Opale",
+  tasks: "✅ Mes tâches & demandes à traiter",
+  projects: "🚀 Produit & Tech — avancement des développements",
+  attention: "⚠️ Points d'attention",
+  other: "📌 Autres sujets",
+};
+
+const PRIO: Record<string, string> = { haute: "🔴 priorité haute", moyenne: "🟠 priorité moyenne", basse: "🟢 priorité basse" };
+
+function meta(t: InboxTopic, today?: string): string {
+  const bits = [
+    t.priority ? PRIO[t.priority] : "",
+    t.due ? `${today && t.due < today ? "⏰ en retard — " : today && t.due === today ? "⏰ " : ""}échéance ${fr(t.due)}` : "",
+    t.owner ?? "",
+  ].filter(Boolean);
+  return bits.length ? `\n_${bits.join(" · ")}_` : "";
+}
+
+/**
+ * Source principale du podcast, ordonnée : vue 360 → tâches → produit & tech → points d'attention.
+ * Uniquement ce qui est nouveau, modifié, résolu, ou à rappeler aujourd'hui (échéance / priorité haute).
+ */
+export function newsToMarkdown(d: TopicDiff, today?: string): string {
   const parts: string[] = [];
-  if (d.fresh.length) {
-    parts.push(`## 🆕 Nouveaux sujets\n\n${d.fresh.map(({ topic }) => `### ${topic.title}\n${topic.summary}${refs(topic)}`).join("\n\n")}`);
-  }
-  if (d.changed.length) {
-    parts.push(
-      `## 🔄 Ce qui a changé\n\n${d.changed
-        .map(({ topic, memory }) => `### ${topic.title} — suivi depuis le ${fr(memory.firstSeen)} (${memory.activeDays} jours)\n${topic.summary}${refs(topic)}`)
-        .join("\n\n")}`,
-    );
+  for (const section of SECTIONS) {
+    const inSection = (x: { topic: InboxTopic }) => (x.topic.section ?? "other") === section;
+    const fresh = d.fresh.filter(inSection);
+    const changed = d.changed.filter(inSection);
+    const reminders = d.reminders.filter(inSection);
+    if (!fresh.length && !changed.length && !reminders.length) continue;
+    const blocks = [
+      ...fresh.map(({ topic }) => `### 🆕 ${topic.title}${meta(topic, today)}\n${topic.summary}${refs(topic)}`),
+      ...changed.map(({ topic, memory }) => `### 🔄 ${topic.title} — suivi depuis le ${fr(memory.firstSeen)} (${memory.activeDays} jours)${meta(topic, today)}\n${topic.summary}${refs(topic)}`),
+    ];
+    if (reminders.length) {
+      blocks.push(`**⏰ Rappels du jour (sans changement depuis le ${fr(reminders[0]!.memory.lastChanged ?? reminders[0]!.memory.firstSeen)}) :**\n${reminders.map(({ topic }) => `- ${topic.title}${meta(topic, today).replace(/\n_|_$/g, " ").trimEnd()}`).join("\n")}`);
+    }
+    parts.push(`## ${SECTION_HEADINGS[section]}\n\n${blocks.join("\n\n")}`);
   }
   if (d.resolved.length) {
-    parts.push(`## ✅ Résolus\n\n${d.resolved.map(({ topic }) => `- **${topic.title}**${topic.summary ? ` — ${topic.summary.split("\n")[0]}` : ""}`).join("\n")}`);
+    parts.push(`## ✔️ Résolus\n\n${d.resolved.map(({ topic }) => `- **${topic.title}**${topic.summary ? ` — ${topic.summary.split("\n")[0]}` : ""}`).join("\n")}`);
   }
   return parts.join("\n\n");
 }
@@ -148,6 +184,12 @@ export function followUpToMarkdown(d: TopicDiff): string {
   }
   return parts.join("\n\n");
 }
+
+/** Structure de lecture : vue 360 en introduction, puis plongée dans la journée du PM. */
+export const STRUCTURE_INSTRUCTIONS =
+  "Structure : (1) en introduction, une vue 360 rapide de ce qui se passe chez Opale (2 minutes maximum) ; " +
+  "(2) puis plonge dans ma journée : réunions du jour, mes tâches et demandes à traiter (échéances du jour en premier), " +
+  "l'avancement des développements et des gros projets, et termine par les points d'attention.";
 
 /** Consigne ajoutée aux animateurs du podcast : un update, pas un récapitulatif. */
 export const NO_REPEAT_INSTRUCTIONS =

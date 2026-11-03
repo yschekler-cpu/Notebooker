@@ -13,7 +13,7 @@ export function emptyOAuth(): NotionOAuthState {
 
 export const DEFAULT_SETTINGS: Settings = {
   profiles: [defaultProfile()],
-  localInbox: { path: "", pollMinutes: 10 },
+  localInbox: { path: "", pollMinutes: 10, coworkContext: "", githubRepos: [] },
   compliance: { gmailExclusions: [] },
   calendar: { calendarIds: ["primary"], hidePrivateEvents: true, skipDeclined: true },
   backlog: { workspace: "company", databaseId: "", defaultStatus: "" },

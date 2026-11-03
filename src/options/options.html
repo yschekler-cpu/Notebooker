@@ -139,6 +139,15 @@
       <button data-test="inbox">Tester la lecture</button>
       <button class="primary" id="li_prompt">Copier le prompt Cowork</button>
     </div>
+    <details>
+      <summary>Paramètres du prompt Cowork (bases Notion, GitHub)</summary>
+      <label for="li_context">Contexte Notion (bases et champs à exploiter) — vide = contexte Opale par défaut</label>
+      <textarea id="li_context" rows="8" spellcheck="false"></textarea>
+      <div class="actions" style="margin-top:8px"><button type="button" id="li_context_reset">Rétablir le contexte Opale</button></div>
+      <label for="li_repos">Dépôts GitHub à suivre (un <code>owner/repo</code> par ligne, optionnel)</label>
+      <textarea id="li_repos" rows="3" spellcheck="false" placeholder="opale-capital/app&#10;opale-capital/deployer"></textarea>
+      <div class="hint">Sans dépôt listé, Cowork s'appuie sur les PR GitHub synchronisées dans les Tech tasks (champ « GitHub pull requests » et « Merge »).</div>
+    </details>
     <div class="glass-inset">
       <b>Mise en place</b> — 1. chrome://extensions › Notebooker › Détails › activer <i>« Autoriser l'accès aux URL de fichier »</i>.
       2. Crée le dossier, puis dans Claude (Cowork) donne-lui accès à ce dossier et crée une <i>tâche planifiée</i> (ex. 7 h 00, jours ouvrés) avec le prompt copié.

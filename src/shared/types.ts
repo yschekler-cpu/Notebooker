@@ -149,6 +149,10 @@ export interface Settings {
     path: string;
     /** Fréquence de surveillance du dossier (minutes). */
     pollMinutes: number;
+    /** Contexte Notion injecté dans le prompt Cowork (vide = contexte Opale par défaut). */
+    coworkContext: string;
+    /** Dépôts GitHub (owner/repo) suivis par Cowork si un connecteur GitHub est disponible. */
+    githubRepos: string[];
   };
   /** Règles de conformité communes à TOUS les profils (non contournables profil par profil). */
   compliance: {

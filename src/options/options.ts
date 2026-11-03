@@ -1,7 +1,7 @@
 import { classify } from "../background/classify";
 import type { NotebookSummary } from "../shared/messages";
 import { exportOrganization, importOrganization } from "../shared/org";
-import { buildCoworkPrompt } from "../shared/coworkPrompt";
+import { OPALE_NOTION_CONTEXT, buildCoworkPrompt } from "../shared/coworkPrompt";
 import { PROFILE_TEMPLATES, normalizeProfile } from "../shared/profiles";
 import { DAY_LABELS } from "../shared/schedule";
 import { getActions, getBriefingRuns, getFolders, getNotebookMetas, getSettings, getSubscriptions, saveSettings, uid } from "../shared/storage";
@@ -31,6 +31,8 @@ function fill(s: Settings): void {
   $<HTMLTextAreaElement>("x_exclusions").value = s.compliance.gmailExclusions.join("\n");
   $("li_path").value = s.localInbox.path;
   $("li_poll").value = String(s.localInbox.pollMinutes);
+  $<HTMLTextAreaElement>("li_context").value = s.localInbox.coworkContext || OPALE_NOTION_CONTEXT;
+  $<HTMLTextAreaElement>("li_repos").value = s.localInbox.githubRepos.join("\n");
   $<HTMLTextAreaElement>("k_ids").value = s.calendar.calendarIds.join("\n");
   $("k_private").checked = s.calendar.hidePrivateEvents;
   $("k_declined").checked = s.calendar.skipDeclined;
@@ -58,7 +60,13 @@ function read(prev: Settings): Settings {
     ...prev,
     profiles: prev.profiles.map((p) => (p.id === currentProfileId ? readProfile(p) : p)),
     compliance: { gmailExclusions: lines("x_exclusions") },
-    localInbox: { path: $("li_path").value.trim(), pollMinutes: Math.min(120, Math.max(5, Number($("li_poll").value) || 10)) },
+    localInbox: {
+      path: $("li_path").value.trim(),
+      pollMinutes: Math.min(120, Math.max(5, Number($("li_poll").value) || 10)),
+      // Contexte identique au défaut → stocké vide (suit les évolutions du contexte Opale par défaut)
+      coworkContext: $<HTMLTextAreaElement>("li_context").value.trim() === OPALE_NOTION_CONTEXT.trim() ? "" : $<HTMLTextAreaElement>("li_context").value.trim(),
+      githubRepos: lines("li_repos").filter((r) => /^[\w.-]+\/[\w.-]+$/.test(r)),
+    },
     calendar: { calendarIds: lines("k_ids").length ? lines("k_ids") : ["primary"], hidePrivateEvents: $("k_private").checked, skipDeclined: $("k_declined").checked },
     backlog: { workspace: $<HTMLSelectElement>("bl_ws").value as "personal" | "company", databaseId: $("bl_db").value.trim(), defaultStatus: $("bl_status").value.trim() },
     notion: {
@@ -489,6 +497,10 @@ async function init(): Promise<void> {
       el.textContent = ok ? "Accès aux fichiers locaux autorisé" : "Accès aux fichiers non autorisé — active « Autoriser l'accès aux URL de fichier » (étape 1 ci-dessous)";
     })
     .catch(() => undefined);
+  $("li_context_reset").onclick = () => {
+    $<HTMLTextAreaElement>("li_context").value = OPALE_NOTION_CONTEXT;
+    say("Contexte Opale rétabli — pense à enregistrer.");
+  };
   $("li_prompt").onclick = async () => {
     settings = read(settings);
     const p = settings.profiles.find((x) => x.id === currentProfileId)!;
@@ -499,6 +511,8 @@ async function init(): Promise<void> {
       lookbackHours: p.lookbackHours,
       exclusions: settings.compliance.gmailExclusions,
       focus: p.synthesisFocus,
+      notionContext: settings.localInbox.coworkContext,
+      githubRepos: settings.localInbox.githubRepos,
     });
     try {
       await navigator.clipboard.writeText(prompt);
